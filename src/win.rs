@@ -40,6 +40,24 @@ impl View {
     }
 }
 
+impl View {
+    /// Map a whole section this process holds a handle to.
+    fn of(
+        section: &Owned,
+        bytes: usize,
+        how: windows::Win32::System::Memory::FILE_MAP,
+    ) -> io::Result<Self> {
+        // SAFETY: a valid section handle, mapped for the whole section.
+        let at = unsafe { MapViewOfFile(section.0, how, 0, 0, bytes) };
+        if at.Value.is_null() {
+            return Err(io::Error::other(
+                "a section this process created could not be viewed",
+            ));
+        }
+        Ok(Self { at, bytes })
+    }
+}
+
 impl Drop for View {
     fn drop(&mut self) {
         // SAFETY: `at` was produced by `MapViewOfFile` and is unmapped once.
@@ -66,6 +84,9 @@ pub struct Published {
     _section: Owned,
     /// Mirrored only: the writer's bytes, and our file's bytes.
     copying: Option<Copying>,
+    /// Owned only: a writable view of the page, which is the section itself.
+    /// The mirrored case reaches the same bytes through `copying.into`.
+    mine: Option<View>,
     shadow: crate::Shadow,
     pacing: crate::Pacing,
 }
@@ -132,12 +153,19 @@ impl Published {
         let section = Owned(handle);
 
         if !already {
+            // **A view of our own page, even though nothing is copied into
+            // it.** An owned page needs no work to stay current — the writer
+            // stores straight into it — but it still has to be *looked at*,
+            // because the writer going away is what this program has no other
+            // way to notice, and blanking it afterwards means writing to it.
+            let mine = View::of(&section, page.bytes, FILE_MAP_WRITE)?;
             return Ok(Self {
+                shadow: crate::Shadow::new(page.bytes),
                 page,
                 mode: Mode::Owned,
                 _section: section,
                 copying: None,
-                shadow: crate::Shadow::new(0),
+                mine: Some(mine),
                 pacing,
             });
         }
@@ -152,13 +180,48 @@ impl Published {
             mode: Mode::Mirrored,
             _section: copying.1,
             copying: Some(copying.0),
+            mine: None,
             pacing,
         })
     }
 
+    /// Look at the page without copying anything, and say whether it moved.
+    ///
+    /// For the heartbeat: the block the caller named as the one that changes
+    /// while the writer is alive. Works in both modes — an owned page is read
+    /// through our own view of the section, a mirrored one through the
+    /// writer's.
+    pub fn stirred(&mut self) -> bool {
+        let bytes = match (self.mine.as_ref(), self.copying.as_ref()) {
+            (Some(mine), _) => mine.as_slice(),
+            (None, Some(copying)) => copying.from.as_slice(),
+            (None, None) => return false,
+        };
+        self.shadow.changed(bytes)
+    }
+
+    /// Zero the page.
+    ///
+    /// **Because the bytes outlive the program that wrote them.** A game
+    /// exits, the section stays — this bridge is holding it — and the file
+    /// goes on holding the last frame. Zeroes are the state every reader
+    /// already waits through, and the state a page is in before anybody
+    /// writes to it.
+    pub fn blank(&mut self) {
+        if let Some(mine) = self.mine.as_mut() {
+            mine.as_mut_slice().fill(0);
+        }
+        if let Some(copying) = self.copying.as_mut() {
+            copying.into.as_mut_slice().fill(0);
+        }
+        // So that the writer's first frame after this counts as a change
+        // rather than as "the same as what I last saw".
+        self.shadow = crate::Shadow::new(self.page.bytes);
+    }
+
     /// One look. Returns how long to wait before the next one.
     ///
-    /// An owned page never gets here — there is nothing to look at.
+    /// An owned page never gets here — there is nothing to copy.
     pub fn tick(&mut self) -> core::time::Duration {
         let Some(copying) = self.copying.as_mut() else {
             return self.pacing.interval();

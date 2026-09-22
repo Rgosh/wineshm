@@ -66,6 +66,7 @@ pub mod reader;
 pub mod schedule;
 pub mod shadow;
 pub mod store;
+pub mod watchdog;
 
 #[cfg(windows)]
 pub mod win;
@@ -77,6 +78,7 @@ pub use page::Page;
 pub use schedule::Schedule;
 pub use shadow::Shadow;
 pub use store::Store;
+pub use watchdog::Watchdog;
 
 /// This program's version, as published in the note it leaves.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

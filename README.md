@@ -31,7 +31,7 @@ MIT licensed. One dependency, Windows-only. No runtime, no service, no daemon.
 | **Needs installing** | nothing. Not protontricks, not a runtime, not a service |
 | **Costs when idle** | 0.35% of one core against 5.15% for a fixed-rate copier ([measured](#measured)) |
 | **Binary** | 332 KB |
-| **Tests** | 134, and the benchmark is a script in the repository |
+| **Tests** | 144, and the benchmark is a script in the repository |
 
 ---
 
@@ -101,6 +101,8 @@ wineshm.exe --page MySharedThing:4096 --page OtherThing:1M
 | `--dir PATH` | Where to publish. Default `/dev/shm` |
 | `--quick MS` | Pace while a mirrored page is changing. Default 4 |
 | `--slowest MS` | Slowest pace for a page that has gone quiet. Default 64 |
+| `--heartbeat NAME` | The block that changes while the writer is alive |
+| `--blank-after MS` | How long it may be quiet before everything is zeroed. Default 5000 |
 | `--verify` | Report what is published here already, then stop |
 | `--json` | With `--verify`, report as JSON instead of a table |
 | `--quiet` | Say nothing but errors |
@@ -218,6 +220,39 @@ the comparison and the backoff earn nothing and the win narrows to the copy
 itself. **The saving is in the time nobody is driving** — which, over an
 evening, is most of it.
 
+## When the writer closes
+
+**The blocks outlive the program that filled them.** A game exits; the section
+it was writing into stays, because this bridge is holding it; and the file goes
+on holding the last frame for ever. A reader opening it finds a car at some
+speed on some circuit — real numbers, from a session that ended. Start the game
+again and, for the moment before its first frame lands, that old frame is still
+what anybody reads.
+
+Name the block that changes while the writer is alive, and when it goes quiet
+everything is zeroed:
+
+```bash
+wineshm.exe --preset assetto-corsa --heartbeat acpmf_physics
+```
+
+```
+nothing has written to acpmf_physics for 5s — every block zeroed, so what is
+left of the last session does not read as this one
+```
+
+Zeroes are the honest answer: they are the state every reader already waits
+through, and the state a block is in before anybody writes to it.
+
+You name the block because you are the one who knows which of them moves —
+this crate does not know what any program's blocks mean, and guessing would
+blank a static block that is simply constant for the session. Nothing is
+blanked unless you ask.
+
+It blanks **once** per silence rather than on every look, and the writer coming
+back is noticed on its first frame, so a game restarted needs nothing done to
+it.
+
 ## Telling a running bridge from its leftovers
 
 A bridge that exits cleanly takes its pages and its note away. One that is
@@ -331,6 +366,7 @@ The parts worth borrowing without the binary:
 | `announce` | The note format, for a reader that wants to know what is publishing |
 | `reader` | Opening and reading a published block, on Linux, with the checks |
 | `schedule` | Which page is due, how long to sleep, when input ending means stop |
+| `watchdog` | Whether the writer has gone quiet, and whether to blank |
 | `liveness` | Beating, abandoned or ahead — from a note's age |
 | `launch` | Finding a Steam prefix and its Proton, on Linux |
 | `win` | The Win32 half. Windows only |

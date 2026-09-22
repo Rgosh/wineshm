@@ -50,6 +50,11 @@ pub struct Options {
     pub quiet: bool,
     /// Report as JSON rather than as a table, for a program reading this.
     pub json: bool,
+    /// The block that changes while the writer is alive. When it goes quiet,
+    /// every block is zeroed — see [`crate::watchdog`].
+    pub heartbeat: Option<String>,
+    /// How long that block may be quiet first.
+    pub blank_after: Duration,
     /// Which `wineshm.exe` to start, when launching. `None` means the one
     /// sitting beside this program.
     pub exe: Option<PathBuf>,
@@ -65,6 +70,8 @@ impl Default for Options {
             slowest: pacing::SLOWEST,
             quiet: false,
             json: false,
+            heartbeat: None,
+            blank_after: crate::watchdog::BLANK_AFTER,
             exe: None,
         }
     }
@@ -95,6 +102,10 @@ OPTIONS:
     --preset NAME        A ready-made page list. One of: assetto-corsa, rfactor2
     --page NAME:SIZE     One page. Repeatable. Size may carry K or M.
     --dir PATH           Where to publish [default: /dev/shm]
+    --heartbeat NAME     The block that changes while the writer is alive. When
+                         it goes quiet every block is zeroed, so a game that has
+                         exited stops reading as a live session
+    --blank-after MS     How long it may be quiet first [default: 5000]
     --quick MS           Pace while a mirrored page is changing [default: 4]
     --slowest MS         Slowest pace for a quiet page [default: 64]
     --verify             Report what is published here already, then stop
@@ -155,6 +166,10 @@ where
             }
             "--quiet" => options.quiet = true,
             "--json" => options.json = true,
+            "--heartbeat" => options.heartbeat = Some(value("--heartbeat")?),
+            "--blank-after" => {
+                options.blank_after = millis(&value("--blank-after")?, "--blank-after")?
+            }
             "--dir" => options.dir = PathBuf::from(value("--dir")?),
             "--quick" => options.quick = millis(&value("--quick")?, "--quick")?,
             "--slowest" => options.slowest = millis(&value("--slowest")?, "--slowest")?,
@@ -190,6 +205,16 @@ where
     // Launching passes the pages through to the copy it starts, so it needs
     // them for the same reason running does.
     let needs_pages = matches!(options.action, Action::Run | Action::Launch { .. });
+    // A heartbeat naming a block that is not being published watches nothing,
+    // for ever, and silently: exactly the shape of a typo nobody finds.
+    if let Some(name) = options.heartbeat.as_deref()
+        && !options.pages.iter().any(|page| page.name == name)
+    {
+        return Err(format!(
+            "--heartbeat {name} is not one of the pages being published"
+        ));
+    }
+
     if needs_pages && options.pages.is_empty() {
         return Err(if presets_used {
             "that preset is empty".to_string()

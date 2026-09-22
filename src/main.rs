@@ -445,6 +445,18 @@ fn hold(
     // is the price of a reader being able to tell a running bridge from one
     // that was killed, which is the difference between live telemetry and a
     // session that ended hours ago reading as real.
+    // **The writer going away, and the frame it leaves behind.** Nothing
+    // else in this program can notice it: the section stays because this
+    // process is holding it, and the file goes on holding the last frame for
+    // ever. The caller names a block that changes while the writer is alive;
+    // when it stops, everything is zeroed. See `wineshm::watchdog`.
+    let heartbeat = options
+        .heartbeat
+        .as_deref()
+        .and_then(|name| published.iter().position(|one| one.page().name == name));
+    let mut dog = wineshm::Watchdog::new(options.blank_after);
+    let mut last_look = Instant::now();
+
     let mut last_beat = Instant::now();
     let beating = note.render();
     let beat = |last: &mut Instant| {
@@ -455,9 +467,39 @@ fn hold(
     };
 
     while !stop.load(Ordering::Relaxed) {
+        if let Some(at) = heartbeat {
+            let since = last_look.elapsed();
+            last_look = Instant::now();
+            let stirred = published
+                .get_mut(at)
+                .is_some_and(wineshm::win::Published::stirred);
+            match dog.saw(stirred, since) {
+                wineshm::watchdog::Verdict::Blank => {
+                    for one in published.iter_mut() {
+                        one.blank();
+                    }
+                    if !options.quiet {
+                        println!(
+                            "nothing has written to {} for {:.0}s — every block zeroed, so what \
+                             is left of the last session does not read as this one",
+                            options.heartbeat.as_deref().unwrap_or_default(),
+                            dog.quiet_for().as_secs_f64()
+                        );
+                    }
+                }
+                wineshm::watchdog::Verdict::Writing => {
+                    if !options.quiet {
+                        println!("writing again");
+                    }
+                }
+                wineshm::watchdog::Verdict::Nothing => {}
+            }
+        }
+
         if mirroring.is_empty() {
-            // Nothing to copy, and still something to say: an owned set is
-            // alive, and a reader has no other way to know it.
+            // Nothing to copy, and still two things to do: say that this is
+            // alive, which a reader has no other way to know, and watch the
+            // heartbeat, which nothing else will.
             beat(&mut last_beat);
             std::thread::sleep(Duration::from_millis(100));
             continue;
