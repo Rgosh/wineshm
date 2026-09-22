@@ -1,0 +1,6 @@
+# `unwrap`, `expect` and `panic` are denied in the program and allowed in its
+# tests: a test that cannot unwrap is a test written around the lint rather
+# than around the behaviour, and a failing `expect` in a test is the report.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true

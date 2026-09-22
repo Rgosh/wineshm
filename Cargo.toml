@@ -1,0 +1,51 @@
+[package]
+name = "wineshm"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+description = "Expose a Windows program's named shared memory to Linux, from inside a Wine or Proton prefix."
+repository = "https://github.com/Rgosh/wineshm"
+readme = "README.md"
+keywords = ["wine", "proton", "shared-memory", "telemetry", "linux"]
+categories = ["os::windows-apis", "game-development"]
+exclude = ["/bench", "/.github"]
+
+[lib]
+name = "wineshm"
+path = "src/lib.rs"
+
+[[bin]]
+name = "wineshm"
+path = "src/main.rs"
+
+# **No dependencies outside Windows, on purpose.**
+#
+# This binary is cross-compiled and run under Wine, where every byte and every
+# millisecond of start-up is paid on somebody's machine while they are waiting
+# to drive. An argument parser and an error-reporting crate are convenience for
+# the author, charged to the user; the whole command line here is three flags.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_Memory",
+] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[lints.rust]
+missing_docs = "warn"
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"

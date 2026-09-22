@@ -1,0 +1,255 @@
+# wineshm
+
+Expose a Windows program's named shared memory to Linux, from inside a Wine or
+Proton prefix.
+
+A Windows program under Proton can publish a block of shared memory — telemetry
+from a racing game, a state block, a score — and nothing on the Linux side can
+open it. The name lives in the prefix's own kernel object namespace, and that
+namespace stops at the prefix.
+
+`wineshm` bridges it. Run it **inside** the prefix, say which blocks you want,
+and each one appears as an ordinary file under `/dev/shm` that any Linux
+program can open, map and read.
+
+```
+wineshm.exe --preset assetto-corsa
+```
+
+```
+$ ls -l /dev/shm/acpmf_physics
+-rw-r--r-- 1 you you 2048 /dev/shm/acpmf_physics
+```
+
+MIT licensed. One dependency, Windows-only. No runtime, no service, no daemon.
+
+---
+
+## How it works
+
+A Win32 section can be backed by a **file**, and a file under `/dev/shm` *is*
+shared memory on the Linux side. Create the section under the name the Windows
+program expects, backed by that file, and the writer's stores land in Linux
+shared memory with nothing copying anything.
+
+```
+        inside the Wine / Proton prefix        │        on Linux
+                                               │
+   ┌──────────────┐                            │
+   │  the Windows │ ── writes ──┐              │
+   │   program    │             │              │
+   └──────────────┘             ▼              │
+                    ┌────────────────────────┐ │   ┌────────────────────┐
+                    │     named section      │═══════│ /dev/shm/acpmf_… │
+                    │   backed by that file  │ │   └────────────────────┘
+                    └────────────────────────┘ │            ▲
+                                ▲              │            │ reads
+                                │ creates      │   ┌────────────────────┐
+                        ┌───────────────┐      │   │   your program     │
+                        │    wineshm    │      │   └────────────────────┘
+                        └───────────────┘      │
+```
+
+## The two modes
+
+Which one a block gets is not a setting. It is decided by who got there first,
+and the program prints it per page.
+
+| | **owned** | **mirrored** |
+|---|---|---|
+| When | `wineshm` started before the writer | the writer was already running |
+| Cost while running | nothing, ever | one comparison per look, one copy per change |
+| Latency | none — it is the same memory | up to one interval |
+| Why | `CreateFileMappingW` made the section, backed by the file | the name was taken, so it is opened and copied |
+
+`CreateFileMappingW` with a name that is **already taken** quietly hands back
+the existing section and ignores the file it was given. A bridge that does not
+notice creates nothing, publishes a file frozen at whatever was in it, and
+looks like it is working. Mirroring is what makes the start-up order stop
+mattering — which is the thing people actually trip over.
+
+## Quick start
+
+Build it for Windows, and run it in the prefix:
+
+```bash
+rustup target add x86_64-pc-windows-gnu
+cargo build --release --target x86_64-pc-windows-gnu
+```
+
+Then, inside the prefix — see [Starting it](#starting-it-in-a-prefix) if that
+part is the problem:
+
+```bash
+wineshm.exe --preset assetto-corsa
+```
+
+Read it from Linux like any other file:
+
+```rust
+let mut file = std::fs::File::open("/dev/shm/acpmf_physics")?;
+let mut bytes = [0u8; 2048];
+file.read_exact(&mut bytes)?;
+```
+
+### Your own blocks
+
+```bash
+wineshm.exe --page MySharedThing:4096 --page OtherThing:1M
+```
+
+| Flag | What it does |
+|---|---|
+| `--preset NAME` | A ready-made list. `assetto-corsa`, `rfactor2` |
+| `--page NAME:SIZE` | One block. Repeatable. Size takes `K` or `M` |
+| `--dir PATH` | Where to publish. Default `/dev/shm` |
+| `--quick MS` | Pace while a mirrored page is changing. Default 4 |
+| `--slowest MS` | Slowest pace for a page that has gone quiet. Default 64 |
+| `--verify` | Report what is published here already, then stop |
+| `--quiet` | Say nothing but errors |
+
+`--verify` runs on **Linux** as happily as under Wine, because the note it
+reads is an ordinary file:
+
+```
+$ wineshm --verify
+wineshm 0.1.0 is publishing, pid 360
+  PAGE                                  BYTES  MODE      ON DISK
+  acpmf_physics                          2048  owned     2048 bytes
+  acpmf_graphics                         2048  mirrored  2048 bytes
+```
+
+## Starting it in a prefix
+
+The usual instruction is `protontricks-launch`, and on an immutable
+distribution — Bazzite, Silverblue, SteamOS — that is a dependency you may not
+be able to install. Worse, it is usually available only as a **Flatpak**, and a
+Flatpak has a `/dev/shm` of its own: the bridge inside one publishes into a
+tmpfs that exists only in that sandbox, reports success, and nothing outside
+can see a byte of it.
+
+Nothing needs to be installed. Steam already ships the Proton the game is set
+to use, and records which one in the prefix it built:
+
+```bash
+PFX="$HOME/.local/share/Steam/steamapps/compatdata/244210"
+PROTON="$(sed -n 2p "$PFX/config_info" | sed 's|/share/fonts/$||')"
+WINEPREFIX="$PFX/pfx" "$PROTON/bin/wine" ./wineshm.exe --preset assetto-corsa
+```
+
+The `launch` module does exactly this, so a program shipping `wineshm`
+alongside itself does not have to shell out to anything:
+
+```rust
+let how = wineshm::launch::how_to_launch(244210);
+let (program, args) = how.command(Path::new("./wineshm.exe"));
+```
+
+Two things that will bite if you write the command by hand: keep the `./`
+before the executable, and do not run it from `/tmp` — that path is not mapped
+in a Proton prefix, and Wine answers "file not found" with the file plainly
+there.
+
+### Where it looks
+
+| Layout | Path |
+|---|---|
+| Native | `~/.steam/steam`, `~/.local/share/Steam` |
+| Flatpak | `~/.var/app/com.valvesoftware.Steam/.local/share/Steam` |
+| Flatpak, older | `~/.var/app/com.valvesoftware.Steam/data/Steam` |
+| Snap | `~/snap/steam/common/.local/share/Steam` |
+| Extra libraries | every `path` in `steamapps/libraryfolders.vdf` |
+
+The Steam Deck and Bazzite use the native layout, so they are not special
+cases. A library on an SD card or a second disk is found through
+`libraryfolders.vdf`, which is why the Deck works without being named.
+
+## Why it is cheaper than copying on a timer
+
+The obvious way to mirror is a fixed interval: wake up every few milliseconds,
+copy every page, sleep. That is what the bridge this was written to replace
+does, and most of it is spent on nothing — a racing game rewrites its physics
+block three hundred times a second *while the car is moving* and not at all in
+the menus, in the garage, on a loading screen or while the session is paused.
+Two of Assetto Corsa's four blocks are written once a session and never again.
+
+So `wineshm`:
+
+1. **Compares before copying.** A `memcmp` reads memory and writes none, and
+   stops at the first byte that differs. Most looks find nothing and stop
+   there.
+2. **Backs off when a page is quiet**, doubling from 4 ms up to 64 ms, and
+   snaps back to 4 ms the instant anything moves. Per page, so a static block
+   does not keep a physics block's pace.
+3. **Publishes with a `memcpy`, not a syscall.** The destination is its own
+   file mapped into the process, so a change is a store to memory the kernel
+   writes back — where a fixed-rate copier does a `seek` and a `write` per page
+   per tick.
+
+### Measured
+
+Both bridges mirroring the same five Assetto Corsa blocks in the same Proton
+prefix, CPU time taken from `/proc/<pid>/stat`. `bench/measure.sh` is the
+script; the numbers below are from one run of it and will move a little on
+other hardware.
+
+| Mirroring 5 blocks | old `shm-bridge` | `wineshm` | |
+|---|---|---|---|
+| **Idle** — menus, garage, paused, results | 5.15% of a core | **0.35%** | 93% less |
+| **Busy** — two blocks at ~333 Hz | 5.15% of a core | **4.30%** | 16% less |
+| Binary on disk | 942,132 bytes | **332,288 bytes** | 65% smaller |
+
+Two runs, twenty seconds each, same prefix, same five blocks, Proton
+Experimental. The idle and busy figures for the old bridge are identical
+because a fixed-rate copier does the same work either way — which is the whole
+point.
+
+The program will also tell you its own numbers when it stops:
+
+```
+  MIRRORED PAGE                       LOOKS   COPIES    WORK  PACE
+  acpmf_physics                         311        0    0.0%  every 64 ms
+  acpmf_static                          311        0    0.0%  every 64 ms
+  0 copies in 622 looks — 0.0% of them did any work, 1244 KiB not copied
+```
+
+
+The honest summary: when a page is genuinely changing every few milliseconds,
+the comparison and the backoff earn nothing and the win narrows to the copy
+itself. **The saving is in the time nobody is driving** — which, over an
+evening, is most of it.
+
+## Using it as a library
+
+```toml
+[dependencies]
+wineshm = "0.1"
+```
+
+The parts worth borrowing without the binary:
+
+| Module | What it is for |
+|---|---|
+| `page` | `NAME:SIZE` parsing, size suffixes, the presets |
+| `store` | The `/dev/shm` side: create, size, zero, remove |
+| `shadow` | Change detection with counters, so a program can report its own saving |
+| `pacing` | The back-off schedule |
+| `announce` | The note format, for a reader that wants to know what is publishing |
+| `launch` | Finding a Steam prefix and its Proton, on Linux |
+| `win` | The Win32 half. Windows only |
+
+## Building
+
+```bash
+cargo build --release --target x86_64-pc-windows-gnu   # the bridge
+cargo test                                              # the logic, on Linux
+cargo mutants                                           # the tests, checked
+```
+
+The Linux build of the binary is not useless: `--verify`, `--help` and the
+`launch` module all work there, which is how a Linux program ships this
+alongside itself.
+
+## Licence
+
+MIT. See [LICENSE](LICENSE).
