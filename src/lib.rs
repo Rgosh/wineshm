@@ -59,9 +59,9 @@ pub mod announce;
 pub mod cli;
 #[cfg(unix)]
 pub mod launch;
+pub mod liveness;
 pub mod pacing;
 pub mod page;
-#[cfg(unix)]
 pub mod reader;
 pub mod schedule;
 pub mod shadow;
@@ -71,6 +71,7 @@ pub mod store;
 pub mod win;
 
 pub use announce::{Mode, Note};
+pub use liveness::Pulse;
 pub use pacing::Pacing;
 pub use page::Page;
 pub use schedule::Schedule;

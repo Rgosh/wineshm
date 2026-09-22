@@ -60,6 +60,11 @@ impl fmt::Display for Mode {
     }
 }
 
+/// The two characters a JSON string cannot carry raw.
+fn escape(text: &str) -> String {
+    text.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
 /// What a running bridge is doing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Note {
@@ -127,6 +132,37 @@ impl Note {
     /// Whether a reader of this format can trust the rest of the file.
     pub fn is_understood(&self) -> bool {
         self.format == FORMAT
+    }
+
+    /// The same facts as JSON, for a program rather than a person.
+    ///
+    /// Hand-rolled, because a serialisation crate to emit six fields is a
+    /// dependency in everybody's build for something that fits on a screen.
+    /// Names are Win32 object names — no control characters, and the two
+    /// characters JSON cares about are escaped rather than assumed absent.
+    pub fn to_json(&self, pulse: Option<crate::Pulse>) -> String {
+        let mut out = String::from("{\n");
+        out.push_str(&format!("  \"format\": {},\n", self.format));
+        out.push_str(&format!("  \"version\": \"{}\",\n", escape(&self.version)));
+        out.push_str(&format!("  \"pid\": {},\n", self.pid));
+        out.push_str(&format!(
+            "  \"alive\": {},\n",
+            pulse.is_none_or(crate::Pulse::is_worth_reading)
+        ));
+        if let Some(pulse) = pulse {
+            out.push_str(&format!("  \"pulse\": \"{}\",\n", pulse.word()));
+        }
+        out.push_str("  \"pages\": [\n");
+        for (at, (page, mode)) in self.pages.iter().enumerate() {
+            let comma = if at + 1 == self.pages.len() { "" } else { "," };
+            out.push_str(&format!(
+                "    {{ \"name\": \"{}\", \"bytes\": {}, \"mode\": \"{mode}\" }}{comma}\n",
+                escape(&page.name),
+                page.bytes
+            ));
+        }
+        out.push_str("  ]\n}\n");
+        out
     }
 }
 
@@ -248,6 +284,60 @@ mod tests {
             ..note()
         };
         assert_eq!(Note::parse(&odd.render()), Some(odd));
+    }
+
+    #[test]
+    fn the_json_carries_the_same_facts_as_the_note() {
+        let json = note().to_json(Some(crate::Pulse::Beating));
+        for wanted in [
+            "\"format\": 1",
+            "\"version\": \"0.1.0\"",
+            "\"pid\": 4321",
+            "\"alive\": true",
+            "\"pulse\": \"beating\"",
+            "\"name\": \"acpmf_physics\"",
+            "\"bytes\": 2048",
+            "\"mode\": \"mirrored\"",
+        ] {
+            assert!(json.contains(wanted), "{wanted} missing from:\n{json}");
+        }
+        // Valid JSON needs no comma after the last element of an array.
+        assert!(!json.contains("},\n  ]"), "{json}");
+    }
+
+    /// An abandoned bridge must say so in the machine-readable form too, or a
+    /// program reading it publishes a session that ended hours ago.
+    #[test]
+    fn the_json_says_when_the_bridge_is_gone() {
+        let json = note().to_json(Some(crate::Pulse::Abandoned));
+        assert!(json.contains("\"alive\": false"), "{json}");
+        assert!(json.contains("\"pulse\": \"abandoned\""), "{json}");
+    }
+
+    /// No pulse to take — a note with no file behind it — is not a claim that
+    /// the bridge is dead.
+    #[test]
+    fn a_note_with_no_pulse_to_take_is_not_called_dead() {
+        let json = note().to_json(None);
+        assert!(json.contains("\"alive\": true"), "{json}");
+        assert!(!json.contains("\"pulse\""), "{json}");
+    }
+
+    /// Win32 names are not required to be JSON-safe.
+    #[test]
+    fn a_name_with_a_quote_in_it_does_not_break_the_json() {
+        let odd = Note {
+            pages: vec![(
+                Page {
+                    name: "odd\"name\\here".to_string(),
+                    bytes: 8,
+                },
+                Mode::Owned,
+            )],
+            ..note()
+        };
+        let json = odd.to_json(None);
+        assert!(json.contains("odd\\\"name\\\\here"), "{json}");
     }
 
     #[test]

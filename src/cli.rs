@@ -48,6 +48,8 @@ pub struct Options {
     pub slowest: Duration,
     /// Say nothing but errors.
     pub quiet: bool,
+    /// Report as JSON rather than as a table, for a program reading this.
+    pub json: bool,
     /// Which `wineshm.exe` to start, when launching. `None` means the one
     /// sitting beside this program.
     pub exe: Option<PathBuf>,
@@ -62,6 +64,7 @@ impl Default for Options {
             quick: pacing::QUICK,
             slowest: pacing::SLOWEST,
             quiet: false,
+            json: false,
             exe: None,
         }
     }
@@ -95,6 +98,7 @@ OPTIONS:
     --quick MS           Pace while a mirrored page is changing [default: 4]
     --slowest MS         Slowest pace for a quiet page [default: 64]
     --verify             Report what is published here already, then stop
+    --json               With --verify, report as JSON instead of a table
     --quiet              Say nothing but errors
     -h, --help           This
     -V, --version        Print the version
@@ -150,6 +154,7 @@ where
                 options.action = Action::Launch { app_id };
             }
             "--quiet" => options.quiet = true,
+            "--json" => options.json = true,
             "--dir" => options.dir = PathBuf::from(value("--dir")?),
             "--quick" => options.quick = millis(&value("--quick")?, "--quick")?,
             "--slowest" => options.slowest = millis(&value("--slowest")?, "--slowest")?,

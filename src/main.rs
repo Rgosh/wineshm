@@ -87,7 +87,23 @@ fn verify(options: &Options) -> std::io::Result<bool> {
         return Ok(false);
     };
 
+    let pulse = wineshm::reader::pulse(&store);
+
+    if options.json {
+        print!("{}", note.to_json(pulse));
+        return Ok(pulse.is_none_or(wineshm::Pulse::is_worth_reading));
+    }
+
     println!("wineshm {} is publishing, pid {}", note.version, note.pid);
+    // **The line that separates a bridge from its leftovers.** A bridge that
+    // was killed leaves this file and its pages exactly as they were, and
+    // every number in them reads as real — which is the worst way for this to
+    // fail, because nothing looks wrong.
+    if let Some(pulse) = pulse
+        && !pulse.is_worth_reading()
+    {
+        println!("  {}", pulse.describe());
+    }
     if !note.is_understood() {
         println!(
             "  note format {} — this build reads {}",
@@ -112,7 +128,7 @@ fn verify(options: &Options) -> std::io::Result<bool> {
             page.name, page.bytes, mode
         );
     }
-    Ok(true)
+    Ok(pulse.is_none_or(wineshm::Pulse::is_worth_reading))
 }
 
 /// Find the game's prefix and start the Windows build of this program in it.
@@ -234,6 +250,24 @@ fn run(options: &Options) -> std::io::Result<()> {
         )));
     }
 
+    // **Another bridge already publishing here is a reason to stop.** Two of
+    // them over one directory is not a redundancy: the second zeroes the files
+    // the first is serving, and from then on whichever writes last wins. It
+    // presents as telemetry that flickers between real and blank, and it is
+    // what happens when a window is closed without the program noticing.
+    //
+    // A note left by a bridge that *died* is not this: it has no pulse, and
+    // being unable to start over one of those would be worse than the fault.
+    if let Some(note) = wineshm::reader::live_publishing(&store) {
+        return Err(std::io::Error::other(format!(
+            "wineshm {} is already publishing in {} (pid {}) — stop it first, or publish \
+             somewhere else with --dir",
+            note.version,
+            store.dir().display(),
+            note.pid
+        )));
+    }
+
     let pacing = wineshm::Pacing::new(options.quick, options.slowest);
     let mut published: Vec<Published> = Vec::with_capacity(options.pages.len());
     for page in &options.pages {
@@ -266,7 +300,7 @@ fn run(options: &Options) -> std::io::Result<()> {
         announce_to_the_terminal(&published, &store);
     }
 
-    hold(&mut published, options);
+    hold(&mut published, options, &note_path, &note);
 
     if !options.quiet {
         report_what_it_cost(&published);
@@ -377,7 +411,12 @@ fn summarise(pages: &[Page], _store: &Store, failures: &[(String, std::io::Error
 
 /// Hold the pages until somebody says stop, copying the mirrored ones.
 #[cfg(windows)]
-fn hold(published: &mut [wineshm::win::Published], options: &Options) {
+fn hold(
+    published: &mut [wineshm::win::Published],
+    options: &Options,
+    note_path: &std::path::Path,
+    note: &wineshm::Note,
+) {
     use wineshm::Schedule;
 
     let stop = Arc::new(AtomicBool::new(false));
@@ -401,11 +440,29 @@ fn hold(published: &mut [wineshm::win::Published], options: &Options) {
     let began = Instant::now();
     let ceiling = options.slowest.max(Duration::from_millis(100));
 
+    // The note is rewritten on a slow beat so that its modified time is a
+    // pulse — see `wineshm::liveness`. One small write every couple of seconds
+    // is the price of a reader being able to tell a running bridge from one
+    // that was killed, which is the difference between live telemetry and a
+    // session that ended hours ago reading as real.
+    let mut last_beat = Instant::now();
+    let beating = note.render();
+    let beat = |last: &mut Instant| {
+        if wineshm::liveness::due_to_beat(last.elapsed(), wineshm::liveness::BEAT) {
+            let _ = std::fs::write(note_path, &beating);
+            *last = Instant::now();
+        }
+    };
+
     while !stop.load(Ordering::Relaxed) {
         if mirroring.is_empty() {
+            // Nothing to copy, and still something to say: an owned set is
+            // alive, and a reader has no other way to know it.
+            beat(&mut last_beat);
             std::thread::sleep(Duration::from_millis(100));
             continue;
         }
+        beat(&mut last_beat);
 
         let now = began.elapsed();
         for (slot, page) in mirroring.iter().enumerate() {

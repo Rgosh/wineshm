@@ -31,7 +31,7 @@ MIT licensed. One dependency, Windows-only. No runtime, no service, no daemon.
 | **Needs installing** | nothing. Not protontricks, not a runtime, not a service |
 | **Costs when idle** | 0.35% of one core against 5.15% for a fixed-rate copier ([measured](#measured)) |
 | **Binary** | 332 KB |
-| **Tests** | 120, and the benchmark is a script in the repository |
+| **Tests** | 134, and the benchmark is a script in the repository |
 
 ---
 
@@ -102,6 +102,7 @@ wineshm.exe --page MySharedThing:4096 --page OtherThing:1M
 | `--quick MS` | Pace while a mirrored page is changing. Default 4 |
 | `--slowest MS` | Slowest pace for a page that has gone quiet. Default 64 |
 | `--verify` | Report what is published here already, then stop |
+| `--json` | With `--verify`, report as JSON instead of a table |
 | `--quiet` | Say nothing but errors |
 
 `--verify` runs on **Linux** as happily as under Wine, because the note it
@@ -217,6 +218,64 @@ the comparison and the backoff earn nothing and the win narrows to the copy
 itself. **The saving is in the time nobody is driving** — which, over an
 evening, is most of it.
 
+## Telling a running bridge from its leftovers
+
+A bridge that exits cleanly takes its pages and its note away. One that is
+**killed** — a window closed, a machine suspended, a script that reaped the
+wrong process — leaves both behind, and the pages then hold the last bytes
+anybody wrote. A reader opening them finds a plausible session that ended
+hours ago: every number in it is real, and none of it is now. Nothing looks
+wrong, which is what makes it the worst way for this to fail.
+
+So a running bridge rewrites its note every two seconds, and the file's
+modified time is a pulse:
+
+```
+$ wineshm --verify
+wineshm 0.1.0 is publishing, pid 216
+  the bridge that published this is gone — the pages are whatever it left
+  PAGE                                  BYTES  MODE      ON DISK
+  acpmf_physics                          2048  owned     2048 bytes
+```
+
+```rust
+// Some(note) only while something is actually maintaining it
+let live = wineshm::reader::live_publishing(&store);
+```
+
+| Call | Answers |
+|---|---|
+| `publishing` | is there a note, and is it a format I understand |
+| `pulse` | is anything still touching it — `Beating`, `Abandoned`, `Ahead` |
+| `live_publishing` | both at once, which is what most programs want |
+
+A clock that jumps backwards reports `Ahead` and is treated as alive: calling
+a working bridge dead is worse than waiting a moment longer.
+
+The bridge uses the same signal on itself — it refuses to start over a bridge
+that is **still beating**, because two of them over one directory means the
+second zeroes the files the first is serving and telemetry flickers between
+real and blank. A note with no pulse is stepped over rather than obeyed.
+
+## Machine-readable
+
+```bash
+$ wineshm --verify --json
+{
+  "format": 1,
+  "version": "0.1.0",
+  "pid": 216,
+  "alive": false,
+  "pulse": "abandoned",
+  "pages": [
+    { "name": "acpmf_physics", "bytes": 2048, "mode": "owned" }
+  ]
+}
+```
+
+Exit status follows `alive`, so a shell script can use it without parsing
+anything.
+
 ## Putting it in your own program
 
 Reading a block is opening a file, and the three things that go wrong if you
@@ -272,6 +331,7 @@ The parts worth borrowing without the binary:
 | `announce` | The note format, for a reader that wants to know what is publishing |
 | `reader` | Opening and reading a published block, on Linux, with the checks |
 | `schedule` | Which page is due, how long to sleep, when input ending means stop |
+| `liveness` | Beating, abandoned or ahead — from a note's age |
 | `launch` | Finding a Steam prefix and its Proton, on Linux |
 | `win` | The Win32 half. Windows only |
 

@@ -21,19 +21,31 @@
 //! ```
 
 use crate::announce::{FILE, Note};
+#[cfg(unix)]
 use crate::page::Page;
 use crate::store::Store;
-use std::fs::File;
+#[cfg(unix)]
 use std::io;
+
+// `Reader` positions its reads with the Unix `pread`, so it is the one part of
+// this module that is not available everywhere. Asking what is published —
+// which is the note, an ordinary file — is available on both, and the bridge
+// itself needs it: it runs as a Windows process and has to notice another
+// bridge already publishing.
+#[cfg(unix)]
+use std::fs::File;
+#[cfg(unix)]
 use std::os::unix::fs::FileExt;
 
 /// An open page, ready to be read as often as you like.
+#[cfg(unix)]
 #[derive(Debug)]
 pub struct Reader {
     file: File,
     page: Page,
 }
 
+#[cfg(unix)]
 impl Reader {
     /// Open a published page.
     ///
@@ -114,9 +126,47 @@ impl Reader {
 ///
 /// `None` when nothing is, or when the note is from a version this does not
 /// understand — both of which mean "do not trust the files beside it".
+///
+/// **This does not say whether the bridge is still alive.** A bridge that was
+/// killed leaves its note and its pages exactly as they were, and they read as
+/// a session that is simply very quiet. Use [`pulse`] for that, or
+/// [`live_publishing`] to ask both questions at once.
 pub fn publishing(store: &Store) -> Option<Note> {
     let text = std::fs::read_to_string(store.dir().join(FILE)).ok()?;
     Note::parse(&text).filter(Note::is_understood)
+}
+
+/// Whether the bridge that wrote the note is still there.
+///
+/// A running bridge touches its note every [`crate::liveness::BEAT`], so the
+/// file's modified time is a pulse. `None` when there is no note to take one
+/// from.
+pub fn pulse(store: &Store) -> Option<crate::Pulse> {
+    pulse_after(store, crate::liveness::STALE)
+}
+
+/// The same, for a caller with its own patience.
+pub fn pulse_after(store: &Store, stale_after: std::time::Duration) -> Option<crate::Pulse> {
+    let touched = std::fs::metadata(store.dir().join(FILE))
+        .ok()?
+        .modified()
+        .ok()?;
+    let now = std::time::SystemTime::now();
+    Some(match now.duration_since(touched) {
+        Ok(age) => crate::liveness::pulse(age, false, stale_after),
+        // The note is dated ahead of this clock, which a clock change does.
+        Err(_) => crate::liveness::pulse(std::time::Duration::ZERO, true, stale_after),
+    })
+}
+
+/// What is publishing here, and only if something still is.
+///
+/// The call to reach for when a program wants live data: a note left behind by
+/// a bridge that died answers `None` rather than handing back a session that
+/// ended hours ago with every number in it looking real.
+pub fn live_publishing(store: &Store) -> Option<Note> {
+    let note = publishing(store)?;
+    pulse(store)?.is_worth_reading().then_some(note)
 }
 
 /// Whether a named block is published here, and at what size.
@@ -128,7 +178,11 @@ pub fn published_size(store: &Store, name: &str) -> Option<usize> {
         .map(|(page, _)| page.bytes)
 }
 
+// Two attributes rather than `all(test, unix)`: clippy recognises a test
+// module by a bare `cfg(test)`, and the lint exemptions in clippy.toml —
+// `expect` and `unwrap` are allowed in tests — are skipped without it.
 #[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
     use crate::announce::{FORMAT, Mode};
