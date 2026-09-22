@@ -115,6 +115,10 @@ impl Store {
 fn zero(file: &File, bytes: usize) -> io::Result<()> {
     use std::io::{Seek, SeekFrom, Write};
 
+    // 64 KiB. The exact figure is not load-bearing — any chunk size writes the
+    // same bytes, which is why a mutation test flags this line and is right to
+    // be ignored about it. What matters is that it is bounded: a 64 MiB page
+    // must not ask for 64 MiB of heap to write nothing into.
     const CHUNK: usize = 64 * 1024;
     let blank = [0u8; CHUNK];
     let mut file = file;

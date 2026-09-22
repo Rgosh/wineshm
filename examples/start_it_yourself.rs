@@ -11,10 +11,23 @@
 //! cargo run --example start_it_yourself -- 244210 ./wineshm.exe
 //! ```
 
+// Linux only: everything below reads `/dev/shm` and Steam's own layout, and
+// the Windows build of this crate has neither. Kept compiling on both so that
+// `cargo clippy --all-targets --target x86_64-pc-windows-gnu` — which is how
+// the shipped binary is checked — does not trip over the examples.
+#[cfg(not(unix))]
+fn main() {
+    eprintln!("this example is for the Linux side; run it there");
+}
+
+#[cfg(unix)]
 use std::path::PathBuf;
+#[cfg(unix)]
 use std::process::{Command, ExitCode};
+#[cfg(unix)]
 use wineshm::launch::{Launch, how_to_launch, inside_flatpak};
 
+#[cfg(unix)]
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
     let (Some(app_id), Some(exe)) = (args.next(), args.next()) else {

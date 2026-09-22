@@ -7,6 +7,16 @@
 //! cargo run --example read_a_block -- acpmf_physics:2048
 //! ```
 
+// Linux only: everything below reads `/dev/shm` and Steam's own layout, and
+// the Windows build of this crate has neither. Kept compiling on both so that
+// `cargo clippy --all-targets --target x86_64-pc-windows-gnu` — which is how
+// the shipped binary is checked — does not trip over the examples.
+#[cfg(not(unix))]
+fn main() {
+    eprintln!("this example is for the Linux side; run it there");
+}
+
+#[cfg(unix)]
 fn main() -> std::process::ExitCode {
     let Some(spec) = std::env::args().nth(1) else {
         eprintln!("usage: read_a_block NAME:SIZE   (try acpmf_physics:2048)");

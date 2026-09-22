@@ -108,15 +108,23 @@ pub fn prefix_in(library: &Path, app_id: u32) -> PathBuf {
         .join("pfx")
 }
 
+/// The prefix Steam built for a game, among these libraries.
+///
+/// Separated from [`prefix_for`] so the search can be tested: that one reads
+/// `$HOME` and the real filesystem, and this one is handed both.
+pub fn prefix_among(libraries: &[PathBuf], app_id: u32) -> Option<PathBuf> {
+    libraries
+        .iter()
+        .map(|library| prefix_in(library, app_id))
+        .find(|candidate| candidate.is_dir())
+}
+
 /// The prefix Steam built for a game, wherever its library is.
 ///
 /// `None` before the game has been run once: Steam builds the prefix on first
 /// launch, not at install.
 pub fn prefix_for(app_id: u32) -> Option<PathBuf> {
-    libraries(&steam_roots())
-        .into_iter()
-        .map(|library| prefix_in(&library, app_id))
-        .find(|candidate| candidate.is_dir())
+    prefix_among(&libraries(&steam_roots()), app_id)
 }
 
 /// The Proton build a prefix was made by, from the note Proton leaves in it.
@@ -217,7 +225,20 @@ pub fn how_to_launch(app_id: u32) -> Launch {
 /// happens". Both signals are checked because a runtime may set one and not
 /// the other.
 pub fn inside_flatpak() -> bool {
-    std::env::var_os("FLATPAK_ID").is_some() || Path::new("/.flatpak-info").exists()
+    sandboxed(
+        std::env::var_os("FLATPAK_ID").is_some(),
+        Path::new("/.flatpak-info").exists(),
+    )
+}
+
+/// The rule on its own, so it can be tested without being inside one.
+///
+/// Either signal is enough: a runtime may set the variable and not write the
+/// file, or run a program in a way that clears the environment, and being
+/// wrong here means saying nothing about the one thing that will waste the
+/// user's evening.
+pub fn sandboxed(env_says_so: bool, marker_file: bool) -> bool {
+    env_says_so || marker_file
 }
 
 #[cfg(test)]
@@ -424,6 +445,37 @@ mod tests {
             assert!(env.iter().any(|(k, _)| k == "DBUS_FATAL_WARNINGS"));
             assert!(env.iter().any(|(k, _)| k == "WINEDLLOVERRIDES"));
         }
+    }
+
+    #[test]
+    fn a_prefix_is_found_in_whichever_library_holds_it() {
+        let dir = scratch("among");
+        let first = dir.join("empty-library");
+        let second = dir.join("the-one-with-the-game");
+        std::fs::create_dir_all(&first).expect("first");
+        std::fs::create_dir_all(prefix_in(&second, 244210)).expect("second");
+
+        let libraries = vec![first.clone(), second.clone()];
+        assert_eq!(
+            prefix_among(&libraries, 244210),
+            Some(prefix_in(&second, 244210))
+        );
+        // A game that has never been run has no prefix anywhere.
+        assert_eq!(prefix_among(&libraries, 999999), None);
+        assert_eq!(prefix_among(&[], 244210), None);
+        // And the first library that has it wins, not the last.
+        std::fs::create_dir_all(prefix_in(&first, 7)).expect("both");
+        std::fs::create_dir_all(prefix_in(&second, 7)).expect("both");
+        assert_eq!(prefix_among(&libraries, 7), Some(prefix_in(&first, 7)));
+    }
+
+    /// Either signal is enough, because a runtime may give only one.
+    #[test]
+    fn a_sandbox_is_noticed_from_either_sign_of_it() {
+        assert!(sandboxed(true, true));
+        assert!(sandboxed(true, false), "the variable alone");
+        assert!(sandboxed(false, true), "the marker file alone");
+        assert!(!sandboxed(false, false));
     }
 
     #[test]

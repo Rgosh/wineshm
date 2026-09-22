@@ -290,3 +290,18 @@ alongside itself.
 ## Licence
 
 MIT. See [LICENSE](LICENSE).
+
+## A note on running the mutation tests
+
+`cargo mutants` builds one copy of the crate per mutant. Two things follow:
+
+* **Give it one job**, not several. Each is a full build, and asked for in
+  parallel on a machine with other work on it that is enough memory for the
+  kernel to start killing processes. `cargo mutants --jobs 1`.
+* **Clean afterwards if your build directory is shared.** With a
+  `build-dir` set in `.cargo/config.toml`, the mutants' artifacts land beside
+  the real ones and the test binary you run next may be a mutant — which looks
+  like a hang in a test that passed a minute ago, because some of the mutants
+  are infinite loops on purpose. `touch src/*.rs` is enough to force a rebuild.
+
+The CI job for it is `workflow_dispatch` only, for the first of those reasons.

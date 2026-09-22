@@ -1,0 +1,99 @@
+# The gate. Everything here is what a contributor would run before pushing,
+# and it runs on both halves of the program — the library, which is tested on
+# Linux, and the Windows binary, which is the half that cannot be.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  test:
+    name: Tests and lints on Linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+
+      # Formatting first: it is the cheapest to fail and the one that passes
+      # locally without anybody noticing, because neither `cargo test` nor
+      # `cargo clippy` reads it.
+      - run: cargo fmt --all --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test --all-targets
+      - run: cargo test --doc
+      - run: cargo build --examples
+
+  windows-binary:
+    name: The binary that runs in the prefix
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+          components: clippy
+
+      # **Cross-built rather than built on Windows.** This is how it is
+      # shipped — a `.exe` that runs under Wine, produced from Linux — so
+      # building it any other way would be checking something nobody runs.
+      - name: The mingw toolchain the gnu target links with
+        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-gnu
+
+      - run: cargo clippy --all-targets --target x86_64-pc-windows-gnu -- -D warnings
+      - run: cargo build --release --target x86_64-pc-windows-gnu
+
+      # The version has to be findable inside the binary without running it —
+      # that is what lets a program shipping this alongside itself say "the
+      # bridge beside me is 0.1.0". A build where that marker was optimised
+      # away would pass every other check in here.
+      - name: The version marker survived the optimiser
+        run: |
+          version="$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
+          if grep -a -q "WINESHM-VERSION=$version;" \
+              target/x86_64-pc-windows-gnu/release/wineshm.exe; then
+            echo "found WINESHM-VERSION=$version in the binary"
+          else
+            echo "::error::the version marker is not in the built binary"
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wineshm-x86_64-pc-windows-gnu
+          path: target/x86_64-pc-windows-gnu/release/wineshm.exe
+
+  mutants:
+    name: The tests, checked
+    runs-on: ubuntu-latest
+    # Not on every push: it builds the crate once per mutant, which is minutes
+    # of runner time and — asked for in parallel on a machine with other work
+    # on it — enough memory to have the kernel start killing things. Ask for
+    # it when the tests change.
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-mutants --locked
+      # One at a time, deliberately. See above.
+      - run: cargo mutants --jobs 1 --exclude src/main.rs --exclude src/win.rs
+        continue-on-error: true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutants
+          path: mutants.out/
