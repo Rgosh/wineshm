@@ -23,6 +23,16 @@ $ ls -l /dev/shm/acpmf_physics
 
 MIT licensed. One dependency, Windows-only. No runtime, no service, no daemon.
 
+| | |
+|---|---|
+| **Works with** | any Windows program under Wine or Proton that publishes named shared memory |
+| **Ready-made** | Assetto Corsa, Assetto Corsa Competizione, rFactor 2 — or name your own blocks |
+| **Finds Steam on** | native, Flatpak, Snap, Steam Deck, Bazzite, and libraries on other disks |
+| **Needs installing** | nothing. Not protontricks, not a runtime, not a service |
+| **Costs when idle** | 0.35% of one core against 5.15% for a fixed-rate copier ([measured](#measured)) |
+| **Binary** | 332 KB |
+| **Tests** | 120, and the benchmark is a script in the repository |
+
 ---
 
 ## How it works
@@ -32,28 +42,14 @@ shared memory on the Linux side. Create the section under the name the Windows
 program expects, backed by that file, and the writer's stores land in Linux
 shared memory with nothing copying anything.
 
-```
-        inside the Wine / Proton prefix        │        on Linux
-                                               │
-   ┌──────────────┐                            │
-   │  the Windows │ ── writes ──┐              │
-   │   program    │             │              │
-   └──────────────┘             ▼              │
-                    ┌────────────────────────┐ │   ┌────────────────────┐
-                    │     named section      │═══════│ /dev/shm/acpmf_… │
-                    │   backed by that file  │ │   └────────────────────┘
-                    └────────────────────────┘ │            ▲
-                                ▲              │            │ reads
-                                │ creates      │   ┌────────────────────┐
-                        ┌───────────────┐      │   │   your program     │
-                        │    wineshm    │      │   └────────────────────┘
-                        └───────────────┘      │
-```
+![How it works](docs/how-it-works.svg)
 
 ## The two modes
 
 Which one a block gets is not a setting. It is decided by who got there first,
 and the program prints it per page.
+
+![The two modes](docs/two-modes.svg)
 
 | | **owned** | **mirrored** |
 |---|---|---|
@@ -193,6 +189,8 @@ prefix, CPU time taken from `/proc/<pid>/stat`. `bench/measure.sh` is the
 script; the numbers below are from one run of it and will move a little on
 other hardware.
 
+![Measured](docs/measured.svg)
+
 | Mirroring 5 blocks | old `shm-bridge` | `wineshm` | |
 |---|---|---|---|
 | **Idle** — menus, garage, paused, results | 5.15% of a core | **0.35%** | 93% less |
@@ -219,11 +217,48 @@ the comparison and the backoff earn nothing and the win narrows to the copy
 itself. **The saving is in the time nobody is driving** — which, over an
 evening, is most of it.
 
-## Using it as a library
+## Putting it in your own program
+
+Reading a block is opening a file, and the three things that go wrong if you
+only do that are the three things `Reader` checks: whether anything is
+publishing at all, whether your block is one of them, and whether it is the
+size you compiled against. A block of the wrong size is the failure that reads
+as data rather than as an error.
 
 ```toml
 [dependencies]
 wineshm = "0.1"
+```
+
+```rust
+use wineshm::{Page, Store, reader::Reader};
+
+let store = Store::default();
+let page = Page { name: "acpmf_physics".into(), bytes: 2048 };
+
+// Is anything there?
+if wineshm::reader::publishing(&store).is_none() {
+    eprintln!("the bridge is not running");
+    return;
+}
+
+let reader = Reader::open(&store, &page)?;   // refuses a size mismatch
+let mut buffer = [0u8; 2048];
+loop {
+    reader.read_into(&mut buffer)?;          // positioned read, no cursor
+    // …your own parsing…
+}
+```
+
+`Reader` takes `&self`, so one of them can be shared across threads without
+any of them moving another's offset. `read_at` takes a slice of a block for a
+program that wants one field out of it.
+
+Two runnable examples:
+
+```bash
+cargo run --example read_a_block -- acpmf_physics:2048
+cargo run --example start_it_yourself -- 244210 ./wineshm.exe
 ```
 
 The parts worth borrowing without the binary:
@@ -235,6 +270,8 @@ The parts worth borrowing without the binary:
 | `shadow` | Change detection with counters, so a program can report its own saving |
 | `pacing` | The back-off schedule |
 | `announce` | The note format, for a reader that wants to know what is publishing |
+| `reader` | Opening and reading a published block, on Linux, with the checks |
+| `schedule` | Which page is due, how long to sleep, when input ending means stop |
 | `launch` | Finding a Steam prefix and its Proton, on Linux |
 | `win` | The Win32 half. Windows only |
 

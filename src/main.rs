@@ -337,8 +337,8 @@ fn report_what_it_cost(published: &[wineshm::win::Published]) {
 
     println!();
     println!(
-        "  {:<32} {:>8} {:>8} {:>7}  {}",
-        "MIRRORED PAGE", "LOOKS", "COPIES", "WORK", "PACE"
+        "  {:<32} {:>8} {:>8} {:>7}  PACE",
+        "MIRRORED PAGE", "LOOKS", "COPIES", "WORK"
     );
     let (mut looks, mut copies, mut saved) = (0u64, 0u64, 0u64);
     for one in &mirrored {
@@ -378,38 +378,45 @@ fn summarise(pages: &[Page], _store: &Store, failures: &[(String, std::io::Error
 /// Hold the pages until somebody says stop, copying the mirrored ones.
 #[cfg(windows)]
 fn hold(published: &mut [wineshm::win::Published], options: &Options) {
+    use wineshm::Schedule;
+
     let stop = Arc::new(AtomicBool::new(false));
     watch_input(Arc::clone(&stop), options.quiet);
 
-    // A deadline per page, because each one backs off at its own rate: a
-    // static block that never changes should not keep a physics block's pace.
-    let mut due: Vec<Instant> = vec![Instant::now(); published.len()];
-    let mut work = published
+    // **Owned pages are not in here at all.** There is nothing to look at: the
+    // writer's stores land in the file directly, so a set with no mirrored
+    // page costs this process one wake-up every tenth of a second, and that
+    // only so it notices being asked to stop.
+    let mirroring: Vec<usize> = published
         .iter()
-        .any(|one| one.mode() == wineshm::Mode::Mirrored);
+        .enumerate()
+        .filter(|(_, one)| one.mode() == wineshm::Mode::Mirrored)
+        .map(|(at, _)| at)
+        .collect();
+
+    // A deadline per page, because each backs off at its own rate: a static
+    // block that never changes should not keep a physics block's pace. The
+    // arithmetic is in `wineshm::Schedule`, where it can be tested.
+    let mut schedule = Schedule::new(mirroring.len());
+    let began = Instant::now();
+    let ceiling = options.slowest.max(Duration::from_millis(100));
 
     while !stop.load(Ordering::Relaxed) {
-        if !work {
-            // Nothing to copy, ever. Sleep on the stop flag instead of
-            // spinning: an owned set costs this process nothing at all.
+        if mirroring.is_empty() {
             std::thread::sleep(Duration::from_millis(100));
             continue;
         }
 
-        let now = Instant::now();
-        let mut soonest = now + options.slowest;
-        for (at, one) in published.iter_mut().enumerate() {
-            if one.mode() != wineshm::Mode::Mirrored {
-                continue;
+        let now = began.elapsed();
+        for (slot, page) in mirroring.iter().enumerate() {
+            if schedule.is_due(slot, now)
+                && let Some(one) = published.get_mut(*page)
+            {
+                schedule.looked_at(slot, now, one.tick());
             }
-            if due[at] <= now {
-                let wait = one.tick();
-                due[at] = now + wait;
-            }
-            soonest = soonest.min(due[at]);
         }
-        work = true;
-        let nap = soonest.saturating_duration_since(Instant::now());
+
+        let nap = schedule.nap(began.elapsed(), ceiling);
         if !nap.is_zero() {
             std::thread::sleep(nap);
         }
@@ -443,7 +450,12 @@ fn watch_input(stop: Arc<AtomicBool>, quiet: bool) {
                     // Input that ends the instant it is asked, with no console
                     // on the other end, is nobody there — not somebody asking
                     // this to stop. Anything later is a parent that has gone.
-                    let nobody = !console && began.elapsed() < Duration::from_secs(2);
+                    // The rule is in `wineshm::schedule`, where it is tested.
+                    let nobody = wineshm::schedule::nobody_was_there(
+                        console,
+                        began.elapsed(),
+                        wineshm::schedule::GRACE,
+                    );
                     if !nobody {
                         stop.store(true, Ordering::Relaxed);
                     }

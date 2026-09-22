@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 380" width="860" height="380" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif">
+  <title>How wineshm bridges Windows named shared memory to Linux</title>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#6b7a90"/>
+    </marker>
+    <style>
+      .bg      { fill: #ffffff; }
+      .panel   { fill: #f4f6f9; stroke: #d6dce6; stroke-width: 1.5; rx: 10; }
+      .box     { fill: #ffffff; stroke: #9aa8bd; stroke-width: 1.5; rx: 8; }
+      .key     { fill: #eef4ff; stroke: #4a7dd6; stroke-width: 2; rx: 8; }
+      .t       { fill: #20293a; font-size: 14px; }
+      .small   { fill: #5b6878; font-size: 12px; }
+      .side    { fill: #8a97a8; font-size: 13px; letter-spacing: .08em; }
+      .line    { stroke: #6b7a90; stroke-width: 1.8; fill: none; marker-end: url(#arrow); }
+      .same    { stroke: #4a7dd6; stroke-width: 3; fill: none; }
+      .divide  { stroke: #c3ccd9; stroke-width: 1.5; stroke-dasharray: 5 5; }
+      @media (prefers-color-scheme: dark) {
+        .bg    { fill: #0f1319; }
+        .panel { fill: #161c26; stroke: #2a3444; }
+        .box   { fill: #1b222e; stroke: #46536a; }
+        .key   { fill: #17243a; stroke: #6f9ae8; }
+        .t     { fill: #e6ecf5; }
+        .small { fill: #a3b0c2; }
+        .side  { fill: #7f8da1; }
+        .line  { stroke: #8695ab; }
+        .same  { stroke: #6f9ae8; }
+        .divide{ stroke: #33405292; }
+      }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="860" height="380"/>
+
+  <line class="divide" x1="430" y1="20" x2="430" y2="360"/>
+  <text class="side" x="30" y="38">INSIDE THE WINE / PROTON PREFIX</text>
+  <text class="side" x="470" y="38">ON LINUX</text>
+
+  <rect class="panel" x="24" y="52" width="384" height="290"/>
+  <rect class="panel" x="452" y="52" width="384" height="290"/>
+
+  <!-- windows side -->
+  <rect class="box" x="52" y="80" width="170" height="54"/>
+  <text class="t" x="68" y="102">the Windows program</text>
+  <text class="small" x="68" y="121">a game, a sim, anything</text>
+
+  <rect class="key" x="52" y="196" width="328" height="76"/>
+  <text class="t" x="70" y="222">named section “acpmf_physics”</text>
+  <text class="small" x="70" y="243">created by wineshm,</text>
+  <text class="small" x="70" y="260">backed by the file on the right →</text>
+
+  <rect class="box" x="246" y="80" width="134" height="54"/>
+  <text class="t" x="262" y="102">wineshm</text>
+  <text class="small" x="262" y="121">runs in here</text>
+
+  <path class="line" d="M 137 134 L 137 192"/>
+  <text class="small" x="146" y="168">writes</text>
+
+  <path class="line" d="M 313 134 L 313 192"/>
+  <text class="small" x="322" y="168">creates</text>
+
+  <!-- the shared backing -->
+  <path class="same" d="M 380 234 L 508 234"/>
+  <text class="small" x="392" y="224">one and the same memory</text>
+
+  <!-- linux side -->
+  <rect class="key" x="508" y="196" width="300" height="76"/>
+  <text class="t" x="526" y="222">/dev/shm/acpmf_physics</text>
+  <text class="small" x="526" y="243">an ordinary file, 2048 bytes</text>
+  <text class="small" x="526" y="260">nothing is copied to keep it current</text>
+
+  <rect class="box" x="508" y="80" width="300" height="54"/>
+  <text class="t" x="526" y="102">your Linux program</text>
+  <text class="small" x="526" y="121">open, read, or mmap it like any file</text>
+
+  <path class="line" d="M 658 192 L 658 138"/>
+  <text class="small" x="668" y="168">reads</text>
+
+  <text class="small" x="52" y="308">A Win32 section can be backed by a file. A file under /dev/shm is shared memory on Linux.</text>
+  <text class="small" x="52" y="328">So the writer’s stores land in Linux shared memory, and nothing copies anything.</text>
+</svg>

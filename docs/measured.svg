@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 330" width="860" height="330" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif">
+  <title>CPU cost while mirroring five blocks: wineshm against a fixed-rate copier</title>
+  <defs>
+    <style>
+      .bg    { fill: #ffffff; }
+      .t     { fill: #20293a; font-size: 14px; }
+      .h     { fill: #20293a; font-size: 16px; font-weight: 600; }
+      .small { fill: #5b6878; font-size: 12px; }
+      .axis  { stroke: #c3ccd9; stroke-width: 1.2; }
+      .old   { fill: #b9c3d2; }
+      .new   { fill: #4a7dd6; }
+      .label { fill: #20293a; font-size: 13px; font-weight: 600; }
+      @media (prefers-color-scheme: dark) {
+        .bg    { fill: #0f1319; }
+        .t     { fill: #e6ecf5; }
+        .h     { fill: #e6ecf5; }
+        .small { fill: #a3b0c2; }
+        .axis  { stroke: #334052; }
+        .old   { fill: #4a5568; }
+        .new   { fill: #6f9ae8; }
+        .label { fill: #e6ecf5; }
+      }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="860" height="330"/>
+
+  <text class="h" x="30" y="34">CPU while mirroring five blocks, as a share of one core</text>
+  <text class="small" x="30" y="54">Lower is better. Two runs of bench/measure.sh, 20 s each, same Proton prefix, same blocks.</text>
+
+  <!-- axis -->
+  <line class="axis" x1="250" y1="80" x2="250" y2="250"/>
+  <line class="axis" x1="250" y1="250" x2="800" y2="250"/>
+
+  <!-- scale marks: 0 .. 6 % over 520px -->
+  <g class="small">
+    <text x="246" y="268" text-anchor="middle">0</text>
+    <text x="337" y="268" text-anchor="middle">1%</text>
+    <text x="424" y="268" text-anchor="middle">2%</text>
+    <text x="511" y="268" text-anchor="middle">3%</text>
+    <text x="598" y="268" text-anchor="middle">4%</text>
+    <text x="685" y="268" text-anchor="middle">5%</text>
+    <text x="772" y="268" text-anchor="middle">6%</text>
+  </g>
+
+  <!-- IDLE -->
+  <text class="t" x="30" y="106">Idle</text>
+  <text class="small" x="30" y="124">menus, garage,</text>
+  <text class="small" x="30" y="140">paused, results</text>
+
+  <rect class="old" x="250" y="88" width="447" height="24" rx="4"/>
+  <text class="label" x="707" y="106">5.15%  the old fixed-rate copier</text>
+
+  <rect class="new" x="250" y="118" width="30" height="24" rx="4"/>
+  <text class="label" x="290" y="136">0.35%  wineshm — 93% less</text>
+
+  <!-- BUSY -->
+  <text class="t" x="30" y="190">On track</text>
+  <text class="small" x="30" y="208">two blocks</text>
+  <text class="small" x="30" y="224">rewritten ~333 Hz</text>
+
+  <rect class="old" x="250" y="172" width="447" height="24" rx="4"/>
+  <text class="label" x="707" y="190">5.15%</text>
+
+  <rect class="new" x="250" y="202" width="373" height="24" rx="4"/>
+  <text class="label" x="633" y="220">4.30%  wineshm — 16% less</text>
+
+  <text class="small" x="30" y="296">The old bridge costs the same either way, because a fixed-rate copier does the same work whether or not anything moved.</text>
+  <text class="small" x="30" y="314">Under real load both copy every tick and only the memcpy is left; the saving is in the time nobody is driving, which is most of an evening.</text>
+</svg>

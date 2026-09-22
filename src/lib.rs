@@ -61,6 +61,9 @@ pub mod cli;
 pub mod launch;
 pub mod pacing;
 pub mod page;
+#[cfg(unix)]
+pub mod reader;
+pub mod schedule;
 pub mod shadow;
 pub mod store;
 
@@ -70,6 +73,7 @@ pub mod win;
 pub use announce::{Mode, Note};
 pub use pacing::Pacing;
 pub use page::Page;
+pub use schedule::Schedule;
 pub use shadow::Shadow;
 pub use store::Store;
 
