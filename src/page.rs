@@ -157,6 +157,31 @@ pub fn preset(name: &str) -> Option<Vec<Page>> {
     )
 }
 
+/// Which of a preset's blocks changes while the program is alive.
+///
+/// **The knowledge belongs with the preset, not with the caller.** A
+/// `--heartbeat` has to name a block that moves constantly, and picking the
+/// wrong one is not an error anybody sees: name a block that is written once a
+/// session and every other block gets blanked in the middle of a live one.
+/// Whoever wrote the preset knows which is which, so it is answered here and
+/// applied automatically — see [`crate::cli::parse`].
+///
+/// `None` for a program whose blocks nobody has checked. Nothing is blanked
+/// then, which is the old behaviour and the safe one.
+pub fn preset_heartbeat(name: &str) -> Option<&'static str> {
+    match name {
+        // Assetto Corsa and Competizione rewrite the physics block on every
+        // physics tick — three hundred times a second — and stop entirely
+        // when the session ends. `acpmf_static` is the trap: it carries the
+        // car and the track, is written once, and would have the bridge blank
+        // a session that is still running.
+        "assetto-corsa" | "ac" | "acc" => Some("acpmf_physics"),
+        // rFactor 2 publishes one block, so it is its own heartbeat.
+        "rfactor2" | "rf2" => Some("$rFactor2SMMP_Telemetry$"),
+        _ => None,
+    }
+}
+
 /// Every preset name, for the help text and for the test that keeps them in
 /// step with it.
 pub const PRESETS: &[&str] = &["assetto-corsa", "rfactor2"];
@@ -310,6 +335,32 @@ mod tests {
 
         let rf2 = preset("rfactor2").unwrap_or_default();
         assert_eq!(rf2.first().map(|page| page.bytes), Some(1_048_576), "1 MiB");
+    }
+
+    /// **A heartbeat that names the wrong block is a silent fault.** It has
+    /// to be one of the preset's own blocks, and it has to be one that moves
+    /// — a static block would have the bridge blank a live session.
+    #[test]
+    fn every_preset_names_a_heartbeat_among_its_own_blocks() {
+        for name in PRESETS {
+            let pages = preset(name).unwrap_or_default();
+            let beat = preset_heartbeat(name).unwrap_or_else(|| panic!("{name} has no heartbeat"));
+            assert!(
+                pages.iter().any(|page| page.name == beat),
+                "{name}: heartbeat {beat} is not one of its pages"
+            );
+            assert_ne!(
+                beat, "acpmf_static",
+                "the static block is written once a session and is the one trap here"
+            );
+        }
+    }
+
+    #[test]
+    fn the_short_names_answer_the_same_heartbeat() {
+        assert_eq!(preset_heartbeat("ac"), preset_heartbeat("assetto-corsa"));
+        assert_eq!(preset_heartbeat("rf2"), preset_heartbeat("rfactor2"));
+        assert_eq!(preset_heartbeat("gran-turismo"), None);
     }
 
     #[test]

@@ -104,7 +104,8 @@ OPTIONS:
     --dir PATH           Where to publish [default: /dev/shm]
     --heartbeat NAME     The block that changes while the writer is alive. When
                          it goes quiet every block is zeroed, so a game that has
-                         exited stops reading as a live session
+                         exited stops reading as a live session. A preset sets
+                         this itself; give it only to override
     --blank-after MS     How long it may be quiet first [default: 5000]
     --quick MS           Pace while a mirrored page is changing [default: 4]
     --slowest MS         Slowest pace for a quiet page [default: 64]
@@ -125,6 +126,7 @@ where
 {
     let mut options = Options::default();
     let mut presets_used = false;
+    let mut preset_named: Option<String> = None;
     let mut args = args.into_iter();
 
     while let Some(arg) = args.next() {
@@ -187,6 +189,7 @@ where
                     )
                 })?;
                 presets_used = true;
+                preset_named = Some(name);
                 options.pages.extend(pages);
             }
             other => {
@@ -205,6 +208,17 @@ where
     // Launching passes the pages through to the copy it starts, so it needs
     // them for the same reason running does.
     let needs_pages = matches!(options.action, Action::Run | Action::Launch { .. });
+    // **A preset knows which of its blocks moves, so it says so.** Without
+    // this every caller has to know that Assetto Corsa's physics block is the
+    // live one and its static block is not — and getting that wrong blanks a
+    // session that is still running. An explicit `--heartbeat` still wins.
+    if options.heartbeat.is_none()
+        && let Some(name) = preset_named.as_deref()
+        && let Some(beat) = crate::page::preset_heartbeat(name)
+    {
+        options.heartbeat = Some(beat.to_string());
+    }
+
     // A heartbeat naming a block that is not being published watches nothing,
     // for ever, and silently: exactly the shape of a typo nobody finds.
     if let Some(name) = options.heartbeat.as_deref()
@@ -301,6 +315,42 @@ mod tests {
         let why = parse_of(&[]).expect_err("refused");
         assert!(why.contains("--preset"), "{why}");
         assert!(why.contains("--page"), "{why}");
+    }
+
+    /// **A preset brings its own heartbeat.** Otherwise every caller has to
+    /// know which of Assetto Corsa's blocks is the live one, and the one that
+    /// looks most like an answer — the static block, with the car and the
+    /// track in it — is the wrong one.
+    #[test]
+    fn a_preset_switches_on_its_own_stale_data_protection() {
+        let options = parse_of(&["--preset", "assetto-corsa"]).expect("parses");
+        assert_eq!(options.heartbeat.as_deref(), Some("acpmf_physics"));
+
+        let options = parse_of(&["--preset", "rfactor2"]).expect("parses");
+        assert_eq!(
+            options.heartbeat.as_deref(),
+            Some("$rFactor2SMMP_Telemetry$")
+        );
+    }
+
+    /// Asking for one explicitly still wins, whichever order it is given in.
+    #[test]
+    fn a_heartbeat_given_by_hand_overrides_the_presets() {
+        for args in [
+            ["--preset", "assetto-corsa", "--heartbeat", "acpmf_graphics"],
+            ["--heartbeat", "acpmf_graphics", "--preset", "assetto-corsa"],
+        ] {
+            let options = parse_of(&args).expect("parses");
+            assert_eq!(options.heartbeat.as_deref(), Some("acpmf_graphics"));
+        }
+    }
+
+    /// Pages named one at a time carry no such knowledge, and nothing is
+    /// blanked without being asked.
+    #[test]
+    fn pages_without_a_preset_get_no_heartbeat_of_their_own() {
+        let options = parse_of(&["--page", "a:16"]).expect("parses");
+        assert_eq!(options.heartbeat, None);
     }
 
     #[test]

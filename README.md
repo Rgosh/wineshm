@@ -31,7 +31,7 @@ MIT licensed. One dependency, Windows-only. No runtime, no service, no daemon.
 | **Needs installing** | nothing. Not protontricks, not a runtime, not a service |
 | **Costs when idle** | 0.35% of one core against 5.15% for a fixed-rate copier ([measured](#measured)) |
 | **Binary** | 332 KB |
-| **Tests** | 144, and the benchmark is a script in the repository |
+| **Tests** | 149, and the benchmark is a script in the repository |
 
 ---
 
@@ -233,8 +233,14 @@ Name the block that changes while the writer is alive, and when it goes quiet
 everything is zeroed:
 
 ```bash
-wineshm.exe --preset assetto-corsa --heartbeat acpmf_physics
+wineshm.exe --preset assetto-corsa
 ```
+
+A preset knows which of its own blocks moves, and switches this on itself —
+`--heartbeat` is only for naming one by hand. That matters because the wrong
+choice is silent: Assetto Corsa's `acpmf_static` carries the car and the track
+and is written once a session, so naming *it* would blank a session that is
+still running.
 
 ```
 nothing has written to acpmf_physics for 5s — every block zeroed, so what is
