@@ -40,7 +40,7 @@ MIT licensed. One dependency, Windows-only. No runtime, no service, no daemon.
 On Arch, a built package is attached to every release:
 
 ```bash
-sudo pacman -U https://github.com/Rgosh/wineshm/releases/latest/download/wineshm-0.6.0-1-x86_64.pkg.tar.zst
+sudo pacman -U https://github.com/Rgosh/wineshm/releases/latest/download/wineshm-0.6.1-1-x86_64.pkg.tar.zst
 ```
 
 Or build it from the `PKGBUILD` in this repository, which is what `yay -B`
