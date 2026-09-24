@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 360" width="860" height="360" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif">
+  <title>Resident memory while a session runs: holding the sections against handing them over</title>
+  <defs>
+    <style>
+      .bg    { fill: #ffffff; }
+      .t     { fill: #20293a; font-size: 14px; }
+      .h     { fill: #20293a; font-size: 16px; font-weight: 600; }
+      .small { fill: #5b6878; font-size: 12px; }
+      .axis  { stroke: #c3ccd9; stroke-width: 1.2; }
+      .old   { fill: #b9c3d2; }
+      .old2  { fill: #9aa7ba; }
+      .new   { fill: #4a7dd6; }
+      .label { fill: #20293a; font-size: 13px; font-weight: 600; }
+      @media (prefers-color-scheme: dark) {
+        .bg    { fill: #0f1319; }
+        .t     { fill: #e6ecf5; }
+        .h     { fill: #e6ecf5; }
+        .small { fill: #a3b0c2; }
+        .axis  { stroke: #334052; }
+        .old   { fill: #4a5568; }
+        .old2  { fill: #5d6b82; }
+        .new   { fill: #6f9ae8; }
+        .label { fill: #e6ecf5; }
+      }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="860" height="360"/>
+
+  <text class="h" x="30" y="34">What the bridge keeps resident for a whole session</text>
+  <text class="small" x="30" y="54">Lower is better. Measured with ps over one Assetto Corsa prefix, Proton 9.0, the four game blocks owned.</text>
+
+  <line class="axis" x1="250" y1="80" x2="250" y2="250"/>
+  <line class="axis" x1="250" y1="250" x2="800" y2="250"/>
+
+  <g class="small">
+    <text x="250" y="268" text-anchor="middle">0</text>
+    <text x="380" y="268" text-anchor="middle">10 MB</text>
+    <text x="510" y="268" text-anchor="middle">20 MB</text>
+    <text x="640" y="268" text-anchor="middle">30 MB</text>
+    <text x="770" y="268" text-anchor="middle">40 MB</text>
+  </g>
+
+  <text class="t" x="30" y="112">Holding</text>
+  <text class="small" x="30" y="130">a Wine process and</text>
+  <text class="small" x="30" y="146">a wineserver client</text>
+
+  <rect class="old" x="250" y="94" width="218" height="26" rx="4"/>
+  <rect class="old2" x="468" y="94" width="278" height="26" rx="4"/>
+  <text class="small" x="359" y="112" text-anchor="middle" fill="#20293a">start.exe 16.8</text>
+  <text class="small" x="607" y="112" text-anchor="middle" fill="#20293a">bridge 21.4</text>
+  <text class="label" x="756" y="112">38.2 MB</text>
+
+  <text class="t" x="30" y="196">Handed over</text>
+  <text class="small" x="30" y="214">no Wine process</text>
+  <text class="small" x="30" y="230">of ours at all</text>
+
+  <rect class="new" x="250" y="178" width="34" height="26" rx="4"/>
+  <text class="label" x="294" y="196">2.6 MB  — 93% less, and nothing under Wine</text>
+
+  <text class="small" x="30" y="300">A named section is a counted object. Once the game holds it, its writes go on landing in /dev/shm whether or not this is running —</text>
+  <text class="small" x="30" y="318">measured by killing the bridge outright and watching a writer's counter keep advancing. What is left is one Linux process watching.</text>
+  <text class="small" x="30" y="342">Processor time was never the thing to fix here: an owned block is never copied, and the idle cost measured 0.25% of a core.</text>
+</svg>

@@ -37,19 +37,28 @@ MIT licensed. One dependency, Windows-only. No runtime, no service, no daemon.
 
 ## Installing
 
-On Arch and anything using the AUR:
+On Arch, a built package is attached to every release:
 
 ```bash
-yay -S wineshm
+sudo pacman -U https://github.com/Rgosh/wineshm/releases/latest/download/wineshm-0.6.0-1-x86_64.pkg.tar.zst
 ```
 
-That puts `wineshm` on your PATH and the Windows half in
+Or build it from the `PKGBUILD` in this repository, which is what `yay -B`
+does for a local directory:
+
+```bash
+git clone https://github.com/Rgosh/wineshm && cd wineshm/packaging/aur && makepkg -si
+```
+
+Either way `wineshm` goes on your PATH and the Windows half in
 `/usr/lib/wineshm/wineshm.exe`, where the program looks for it by itself —
 there is nothing to configure and nothing to copy into a game folder.
 
-Anywhere else, or to build it yourself, see [Building](#building). The
-`packaging/aur` directory holds the `PKGBUILD` if you would rather read it
-first.
+> The package is not on the AUR yet. Account registration there is closed
+> while they deal with a wave of automated sign-ups; the `PKGBUILD` is ready
+> for the day it reopens.
+
+Anywhere else, or to build it yourself, see [Building](#building).
 
 ## How it works
 
@@ -406,6 +415,8 @@ landing in the file with no bridge in existence.
 
 Measured, then built: the bridge was killed outright and a writer's counter
 went on advancing in `/dev/shm`.
+
+![What handing over saves](docs/handoff.svg)
 
 ```bash
 wineshm --appid 244210 --preset assetto-corsa --handoff

@@ -83,3 +83,57 @@ jobs:
             || gh release create "$tag" --title "wineshm ${tag#v}" --generate-notes
           gh release upload "$tag" \
             target/x86_64-pc-windows-gnu/release/wineshm.exe --clobber
+
+  # **A package without the AUR.** The AUR is where an Arch user would look
+  # first, and account registration there is closed for the moment — so the
+  # package is built here and attached to the release instead. One command
+  # installs it, and nothing has to be cloned or compiled by hand:
+  #
+  #     sudo pacman -U https://github.com/Rgosh/wineshm/releases/download/vX/wineshm-X-1-x86_64.pkg.tar.zst
+  #
+  # The PKGBUILD in packaging/aur is the same one, kept ready for the day the
+  # AUR reopens.
+  arch-package:
+    name: An Arch package, attached to the release
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    # After the binary is attached, because the PKGBUILD fetches it from this
+    # release: the package cannot be built until the thing it packages is there.
+    needs: publish
+    steps:
+      - name: What makepkg needs, and a user to run it as
+        run: |
+          pacman -Syu --noconfirm git rust pacman-contrib github-cli
+          useradd -m builder
+          echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Build it
+        run: |
+          tag="${{ inputs.tag || github.ref_name }}"
+          cp packaging/aur/PKGBUILD /home/builder/
+          chown -R builder /home/builder
+          # The version comes from the tag, and the checksums are recomputed
+          # rather than trusted from the file: the release binary this fetches
+          # was produced by the job above, minutes ago, so a sum committed
+          # before the tag existed could not have been the right one. What is
+          # in packaging/aur stays the last known-good pair for a human.
+          #
+          # --nocheck: the PKGBUILD's check() runs the test suite, and the CI
+          # workflow has already run it against this same commit. Running it a
+          # second time in a slower container proves nothing new.
+          su builder -c "cd /home/builder && \
+            sed -i \"s/^pkgver=.*/pkgver=${tag#v}/\" PKGBUILD && \
+            updpkgsums PKGBUILD && \
+            makepkg --noconfirm --nocheck"
+          cp /home/builder/*.pkg.tar.zst .
+
+      - name: Attach it
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ inputs.tag || github.ref_name }}"
+          gh release upload "$tag" ./*.pkg.tar.zst --clobber
