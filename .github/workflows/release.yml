@@ -136,4 +136,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag="${{ inputs.tag || github.ref_name }}"
-          gh release upload "$tag" ./*.pkg.tar.zst --clobber
+          # --repo, so gh never asks git which repository this is: the checkout
+          # inside the container belongs to another uid and git refuses it as
+          # "dubious ownership", which has nothing to do with uploading a file.
+          gh release upload "$tag" ./*.pkg.tar.zst --clobber \
+            --repo "$GITHUB_REPOSITORY"
