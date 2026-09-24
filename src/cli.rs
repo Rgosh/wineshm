@@ -25,6 +25,8 @@ pub enum Action {
     Version,
     /// Report what is already published here, and stop.
     Verify,
+    /// Measure named sections that already exist inside this prefix, and stop.
+    Probe,
     /// Find this Steam game's prefix, and start the Windows build of this
     /// program inside it. Linux side.
     Launch {
@@ -58,6 +60,8 @@ pub struct Options {
     /// Which `wineshm.exe` to start, when launching. `None` means the one
     /// sitting beside this program.
     pub exe: Option<PathBuf>,
+    /// Section names to measure, for [`Action::Probe`].
+    pub probes: Vec<String>,
 }
 
 impl Default for Options {
@@ -73,6 +77,7 @@ impl Default for Options {
             heartbeat: None,
             blank_after: crate::watchdog::BLANK_AFTER,
             exe: None,
+            probes: Vec::new(),
         }
     }
 }
@@ -109,6 +114,9 @@ OPTIONS:
     --blank-after MS     How long it may be quiet first [default: 5000]
     --quick MS           Pace while a mirrored page is changing [default: 4]
     --slowest MS         Slowest pace for a quiet page [default: 64]
+    --probe NAME         Measure a section the game has already made, and say
+                         how big it is. Repeatable. Run this while the game is
+                         running, to find out what --page size to ask for
     --verify             Report what is published here already, then stop
     --json               With --verify, report as JSON instead of a table
     --quiet              Say nothing but errors
@@ -158,6 +166,10 @@ where
                 });
             }
             "--verify" => options.action = Action::Verify,
+            "--probe" => {
+                options.probes.push(value("--probe")?);
+                options.action = Action::Probe;
+            }
             "--exe" => options.exe = Some(PathBuf::from(value("--exe")?)),
             "--appid" => {
                 let text = value("--appid")?;

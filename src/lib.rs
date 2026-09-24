@@ -62,6 +62,7 @@ pub mod launch;
 pub mod liveness;
 pub mod pacing;
 pub mod page;
+pub mod probe;
 pub mod reader;
 pub mod schedule;
 pub mod shadow;

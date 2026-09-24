@@ -48,6 +48,19 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Action::Probe => match probe(&options) {
+            Ok(all_there) => {
+                if all_there {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::FAILURE
+                }
+            }
+            Err(why) => {
+                eprintln!("wineshm: {why}");
+                ExitCode::FAILURE
+            }
+        },
         Action::Launch { app_id } => match launch(&options, app_id) {
             Ok(code) => code,
             Err(why) => {
@@ -63,6 +76,56 @@ fn main() -> ExitCode {
             }
         },
     }
+}
+
+/// Measure sections that already exist in this prefix.
+///
+/// **The question this answers is "what size should I ask for?"** Until now
+/// the only way to find out was to try a number and see whether the mapping
+/// failed, which distinguishes "too big" from "right" and never "too small"
+/// from "right". Started while the game is running, this reports what the
+/// game's own section actually occupies.
+///
+/// `false` when something asked about was not there, so a script can tell.
+#[cfg(windows)]
+fn probe(options: &Options) -> std::io::Result<bool> {
+    let mut all_there = true;
+    if !options.quiet {
+        println!("  {:<38}SIZE", "SECTION");
+    }
+    for name in &options.probes {
+        match wineshm::win::look_at(name)? {
+            Some(found) => {
+                if options.quiet {
+                    println!("{} {}", found.name, found.region);
+                } else {
+                    println!("  {:<38}{}", found.name, found.described());
+                }
+            }
+            None => {
+                all_there = false;
+                if !options.quiet {
+                    println!("  {name:<38}not there — is the program running?");
+                }
+            }
+        }
+    }
+    if all_there && !options.quiet {
+        println!(
+            "sizes are reported in whole pages of address space, so a block of 2048 and one of \n\
+             4096 look alike — ask for the size the program documents, and use this to tell \n\
+             whether it is in the right range at all"
+        );
+    }
+    Ok(all_there)
+}
+
+#[cfg(not(windows))]
+fn probe(_options: &Options) -> std::io::Result<bool> {
+    Err(std::io::Error::other(
+        "--probe looks at sections inside the prefix, so it has to run inside one: \
+         wineshm.exe --probe NAME",
+    ))
 }
 
 /// Report what is already published in this directory.

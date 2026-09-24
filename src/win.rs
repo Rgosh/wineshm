@@ -313,6 +313,58 @@ fn split_size(bytes: usize) -> (u32, u32) {
     )
 }
 
+/// Look at a section somebody else published, without publishing anything.
+///
+/// **So that a size can be measured rather than guessed.** The number of bytes
+/// in a page is a fact about a program somebody else wrote, and getting it
+/// wrong fails quietly — see [`crate::probe`]. Mapping the section with a
+/// length of zero maps the whole of it, whatever that is, and `VirtualQuery`
+/// then says how much address space that took.
+///
+/// `Ok(None)` means no section of that name exists, which is an answer and not
+/// a failure: it is what "the game is not running" looks like from here.
+pub fn look_at(name: &str) -> io::Result<Option<crate::probe::Found>> {
+    use windows::Win32::System::Memory::{MEMORY_BASIC_INFORMATION, VirtualQuery};
+
+    let wide = HSTRING::from(name);
+    // SAFETY: the name outlives the call; the handle is owned below.
+    let Ok(theirs) = (unsafe { OpenFileMappingW(FILE_MAP_READ.0, false, &wide) }) else {
+        return Ok(None);
+    };
+    let theirs = Owned(theirs);
+
+    // A length of zero is "as much as there is", which is the entire point.
+    // SAFETY: a valid section handle.
+    let at = unsafe { MapViewOfFile(theirs.0, FILE_MAP_READ, 0, 0, 0) };
+    if at.Value.is_null() {
+        return Err(io::Error::other(format!(
+            "{name} exists but could not be viewed"
+        )));
+    }
+    let view = View { at, bytes: 0 };
+
+    let mut about = MEMORY_BASIC_INFORMATION::default();
+    // SAFETY: `at` is a mapped address in this process, and `about` is the
+    // structure the call is documented to fill.
+    let written = unsafe {
+        VirtualQuery(
+            Some(view.at.Value),
+            &mut about,
+            core::mem::size_of::<MEMORY_BASIC_INFORMATION>(),
+        )
+    };
+    if written == 0 {
+        return Err(io::Error::other(format!(
+            "{name} is mapped but Windows would not say how big it is"
+        )));
+    }
+
+    Ok(Some(crate::probe::Found {
+        name: name.to_string(),
+        region: about.RegionSize,
+    }))
+}
+
 /// Whether a person is on the other end of this program's input.
 ///
 /// **The program stops when its input ends, and that is right twice and wrong
