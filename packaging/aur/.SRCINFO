@@ -1,0 +1,17 @@
+pkgbase = wineshm
+	pkgdesc = Expose a Windows program's named shared memory to Linux, from inside a Wine or Proton prefix
+	pkgver = 0.5.0
+	pkgrel = 1
+	url = https://github.com/Rgosh/wineshm
+	arch = x86_64
+	license = MIT
+	makedepends = cargo
+	depends = gcc-libs
+	optdepends = steam: to find a game prefix with --appid
+	optdepends = wine: to run the bridge in a prefix you manage yourself
+	source = wineshm-0.5.0.tar.gz::https://github.com/Rgosh/wineshm/archive/refs/tags/v0.5.0.tar.gz
+	source = wineshm-0.5.0.exe::https://github.com/Rgosh/wineshm/releases/download/v0.5.0/wineshm.exe
+	sha256sums = 10000bc51b740d0f46a785693c0549e9fc8a2cc4b60013c0a64028ab17270d39
+	sha256sums = 8b3b2dbc90bf4646e4a37d33f4165099fbd3f9cab9107437ad449ed26e240929
+
+pkgname = wineshm

@@ -1,0 +1,56 @@
+# Maintainer: Rgosh <rgoshbbb@gmail.com>
+pkgname=wineshm
+pkgver=0.5.0
+pkgrel=1
+pkgdesc="Expose a Windows program's named shared memory to Linux, from inside a Wine or Proton prefix"
+arch=('x86_64')
+url="https://github.com/Rgosh/wineshm"
+license=('MIT')
+depends=('gcc-libs')
+makedepends=('cargo')
+optdepends=('steam: to find a game prefix with --appid'
+            'wine: to run the bridge in a prefix you manage yourself')
+# **The Windows half comes from the release rather than being built here.**
+# Cross-building it needs the x86_64-pc-windows-gnu standard library, which
+# Arch's `rust` does not ship and which a package has no business installing
+# into somebody's toolchain. The release binary is built by CI from this same
+# tag — see .github/workflows/release.yml — and is checksummed below, so what
+# is installed is still tied to the source being built beside it.
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz"
+        "$pkgname-$pkgver.exe::$url/releases/download/v$pkgver/wineshm.exe")
+sha256sums=('10000bc51b740d0f46a785693c0549e9fc8a2cc4b60013c0a64028ab17270d39'
+            '8b3b2dbc90bf4646e4a37d33f4165099fbd3f9cab9107437ad449ed26e240929')
+
+prepare() {
+  cd "$pkgname-$pkgver"
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/^host: //p')"
+}
+
+build() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo build --frozen --release
+}
+
+check() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo test --frozen
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+
+  install -Dm755 target/release/wineshm "$pkgdir/usr/bin/wineshm"
+
+  # Not /usr/bin: a Windows executable is not something to put on anybody's
+  # PATH. The program looks here by itself — see launch::exe_candidates.
+  install -Dm644 "$srcdir/$pkgname-$pkgver.exe" "$pkgdir/usr/lib/$pkgname/wineshm.exe"
+
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+  for recipe in recipes/*; do
+    install -Dm644 "$recipe" "$pkgdir/usr/share/$pkgname/recipes/$(basename "$recipe")"
+  done
+}

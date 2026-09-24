@@ -35,6 +35,22 @@ MIT licensed. One dependency, Windows-only. No runtime, no service, no daemon.
 
 ---
 
+## Installing
+
+On Arch and anything using the AUR:
+
+```bash
+yay -S wineshm
+```
+
+That puts `wineshm` on your PATH and the Windows half in
+`/usr/lib/wineshm/wineshm.exe`, where the program looks for it by itself —
+there is nothing to configure and nothing to copy into a game folder.
+
+Anywhere else, or to build it yourself, see [Building](#building). The
+`packaging/aur` directory holds the `PKGBUILD` if you would rather read it
+first.
+
 ## How it works
 
 A Win32 section can be backed by a **file**, and a file under `/dev/shm` *is*
