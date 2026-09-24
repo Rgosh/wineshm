@@ -9,7 +9,7 @@ license=('MIT')
 depends=('gcc-libs')
 makedepends=('cargo')
 optdepends=('steam: to find a game prefix with --appid'
-            'wine: to run the bridge in a prefix you manage yourself')
+            'db7b435712ed9369184b62e50d8da258349c293f5e24a922fb87e0c6af31ae37')
 # **The Windows half comes from the release rather than being built here.**
 # Cross-building it needs the x86_64-pc-windows-gnu standard library, which
 # Arch's `rust` does not ship and which a package has no business installing
@@ -18,8 +18,8 @@ optdepends=('steam: to find a game prefix with --appid'
 # is installed is still tied to the source being built beside it.
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz"
         "$pkgname-$pkgver.exe::$url/releases/download/v$pkgver/wineshm.exe")
-sha256sums=('10000bc51b740d0f46a785693c0549e9fc8a2cc4b60013c0a64028ab17270d39'
-            '8b3b2dbc90bf4646e4a37d33f4165099fbd3f9cab9107437ad449ed26e240929')
+sha256sums=('62780e6cdaa41875f06b5ba9b5626ecaba313db10c5cbbcb19a9c31d91f7169f'
+            'db7b435712ed9369184b62e50d8da258349c293f5e24a922fb87e0c6af31ae37')
 
 prepare() {
   cd "$pkgname-$pkgver"
