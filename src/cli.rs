@@ -575,10 +575,37 @@ mod tests {
         assert!(why.contains("acpmf_physics"), "{why}");
     }
 
+    /// The help is the documentation of the flags, so a flag the parser takes
+    /// and the help does not mention is a flag nobody will find.
     #[test]
-    fn the_help_mentions_the_file_and_the_probe() {
-        assert!(HELP.contains("--pages-from"), "{HELP}");
-        assert!(HELP.contains("--probe"), "{HELP}");
+    fn the_help_mentions_every_flag_the_parser_takes() {
+        for flag in [
+            "--appid",
+            "--exe",
+            "--preset",
+            "--page",
+            "--pages-from",
+            "--dir",
+            "--heartbeat",
+            "--blank-after",
+            "--quick",
+            "--slowest",
+            "--probe",
+            "--watch",
+            "--verify",
+            "--json",
+            "--quiet",
+        ] {
+            assert!(HELP.contains(flag), "the help does not mention {flag}");
+            // And the parser knows it: an unknown flag is refused by name, so
+            // the one refusal that must not appear is that one.
+            if let Err(why) = parse_of(&[flag]) {
+                assert!(
+                    !why.contains("is not a flag this knows"),
+                    "the help documents {flag} and the parser does not take it"
+                );
+            }
+        }
     }
 
     #[test]

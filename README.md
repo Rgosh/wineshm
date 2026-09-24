@@ -103,6 +103,9 @@ wineshm.exe --page MySharedThing:4096 --page OtherThing:1M
 | `--slowest MS` | Slowest pace for a page that has gone quiet. Default 64 |
 | `--heartbeat NAME` | The block that changes while the writer is alive |
 | `--blank-after MS` | How long it may be quiet before everything is zeroed. Default 5000 |
+| `--pages-from FILE` | A file describing a program. Repeatable |
+| `--probe NAME` | Measure a section the program has already made |
+| `--watch` | Show, live, which blocks are actually changing |
 | `--verify` | Report what is published here already, then stop |
 | `--json` | With `--verify`, report as JSON instead of a table |
 | `--quiet` | Say nothing but errors |
@@ -117,6 +120,90 @@ wineshm 0.1.0 is publishing, pid 360
   acpmf_physics                          2048  owned     2048 bytes
   acpmf_graphics                         2048  mirrored  2048 bytes
 ```
+
+### A program this has no preset for
+
+There are two presets and there are a great many programs. Adding one does not
+need a fork, and — more importantly — does not need you to guess.
+
+**The name is usually documented. The size usually is not**, and getting it
+wrong fails in the direction nobody notices: ask for less than the block holds
+and it maps, everything looks fine, and every field past your size is simply
+absent. Asking for too much at least fails loudly.
+
+So measure it. Start the program, then, inside the same prefix:
+
+```bash
+wineshm.exe --probe MySharedThing
+```
+
+```
+  SECTION                               SIZE
+  MySharedThing                         more than 12288 and at most 16384 bytes
+  NotRunningYet                         not there — is the program running?
+```
+
+The answer is a range on purpose. Windows reports mapped memory in whole 4 KiB
+pages, so a 2048-byte block and a 4096-byte one are indistinguishable from
+outside, and a single number would look like a measurement it is not. Use it to
+check that the size you have is in the right range at all — being an order of
+magnitude out is the mistake that costs an evening.
+
+Then write it down, so you never type it again and so you can give it to
+somebody else:
+
+```
+# my-program.txt
+MySharedThing:16384
+OtherThing:2048
+
+heartbeat MySharedThing
+```
+
+```bash
+wineshm.exe --pages-from my-program.txt
+```
+
+`#` starts a comment, blank lines are ignored, and `heartbeat NAME` names the
+block that changes while the program is alive — see [When the writer
+closes](#when-the-writer-closes). Every complaint carries the file and the
+line number, because a file is a thing somebody edits.
+
+`recipes/` has Assetto Corsa written out as a worked example and a template
+with the whole procedure in its comments.
+
+## Is anything actually moving?
+
+When telemetry is wrong, the candidates all look alike: the program is not
+writing, the bridge is not copying, the reader has the wrong block, or the
+numbers are fine and the reader's arithmetic is not. `--watch` separates the
+first two from the rest.
+
+```bash
+wineshm --watch
+```
+
+```
+watching 4 blocks in /dev/shm — Ctrl-C to stop
+  acpmf_physics                     moving   98% of looks
+  acpmf_graphics                    moving   61% of looks
+  acpmf_static                      still    last changed 84s ago
+  acpmf_crewchief                   never    nothing has ever written to it
+```
+
+It runs on **Linux**, outside the prefix, while the game is running — the
+blocks are ordinary files, so watching needs no Win32 and no prefix, and it can
+sit in a terminal beside the game.
+
+Three states rather than a number, because **"never written to" and "stopped
+being written to" are different faults** — a wrong name or a program that has
+not started, against a session that has ended — and in a percentage they look
+identical.
+
+The measure is the proportion of looks that found a change, not a rate. A
+333 Hz block cannot be counted by sampling without sampling faster than it is
+written, and this looks fifty times a second precisely so that watching costs
+nothing.
 
 ## Starting it in a prefix
 
@@ -258,6 +345,39 @@ blanked unless you ask.
 It blanks **once** per silence rather than on every look, and the writer coming
 back is noticed on its first frame, so a game restarted needs nothing done to
 it.
+
+### When the bridge itself is killed
+
+The watchdog above covers the *writer* going away while the bridge is still
+running. It has nothing left to notice with when the bridge is the one that
+went — the window closed, the machine logged off, a script reaped it — and the
+files would stay behind holding the last frame.
+
+Two things close that, and which is which was measured under Proton rather than
+assumed:
+
+| How it is killed | What happens |
+|---|---|
+| Ctrl-C, window closed, logoff, shutdown | Wine delivers a console control event. The bridge blanks and unlinks before it goes |
+| `SIGTERM` | **Wine does not translate it.** The Linux side finishes the job instead |
+
+`SIGTERM` is what a script, a session manager and Steam all send, so when the
+bridge was started with `--appid` the Linux half outlives it, waits for the
+note's pulse to stop, and takes away the pages it asked for:
+
+```
+the bridge inside the prefix did not shut down cleanly — took away 4 pages it
+left behind, so what is left of that session does not read as a live one
+```
+
+It waits for the pulse because the note of a bridge that has just died is by
+definition a moment old — asking "is anything publishing here?" the instant the
+process exits always answers yes, about the corpse. A note that goes stale was
+its; one that keeps being touched belongs to something alive, and taking its
+pages would break a bridge that works.
+
+Neither covers `SIGKILL` or the power going out, and nothing can. That is what
+the note's pulse is for, below.
 
 ## Telling a running bridge from its leftovers
 
