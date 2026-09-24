@@ -241,8 +241,88 @@ pub fn sandboxed(env_says_so: bool, marker_file: bool) -> bool {
     env_says_so || marker_file
 }
 
+/// Where a `wineshm.exe` might be, in the order worth trying.
+///
+/// **Because a packaged install does not put it next to the Linux binary.**
+/// Run out of a checkout the two sit side by side, and that is the only case
+/// the program used to know. Installed from a distribution package the Linux
+/// half goes in `/usr/bin` and a Windows `.exe` has no business being there,
+/// so it goes in the package's own directory — and the program has to know
+/// that or `yay -S wineshm` produces something that cannot start.
+///
+/// `beside` is the directory holding the running Linux binary, which is tried
+/// first: somebody who put a newer `.exe` next to the program meant it.
+pub fn exe_candidates(beside: Option<&Path>) -> Vec<PathBuf> {
+    let mut all = Vec::new();
+    if let Some(dir) = beside {
+        all.push(dir.join(EXE));
+    }
+    for dir in [
+        "/usr/lib/wineshm",
+        "/usr/share/wineshm",
+        "/usr/local/lib/wineshm",
+    ] {
+        all.push(Path::new(dir).join(EXE));
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        all.push(Path::new(&home).join(".local/share/wineshm").join(EXE));
+    }
+    all
+}
+
+/// The name of the Windows half.
+pub const EXE: &str = "wineshm.exe";
+
 #[cfg(test)]
 mod tests {
+    use super::{EXE, exe_candidates};
+
+    /// Run out of a checkout the two halves sit side by side, and that is the
+    /// case somebody is actively working in — a newer `.exe` put there by hand
+    /// must beat whatever a package installed.
+    #[test]
+    fn what_is_beside_the_program_is_tried_first() {
+        let all = exe_candidates(Some(std::path::Path::new("/opt/mine")));
+        assert_eq!(
+            all.first().map(|p| p.as_path()),
+            Some(std::path::Path::new("/opt/mine/wineshm.exe"))
+        );
+    }
+
+    /// The reason this function exists: a distribution package puts the Linux
+    /// half in /usr/bin, where a Windows .exe has no business being.
+    #[test]
+    fn a_packaged_install_is_looked_for() {
+        let all = exe_candidates(None);
+        assert!(
+            all.iter().any(|p| p.starts_with("/usr/lib/wineshm")),
+            "{all:?}"
+        );
+        assert!(
+            !all.iter()
+                .any(|p| p == std::path::Path::new("/usr/bin/wineshm.exe")),
+            "a .exe in /usr/bin is not somewhere a package may put one"
+        );
+    }
+
+    #[test]
+    fn every_candidate_is_the_windows_half_by_name() {
+        for path in exe_candidates(Some(std::path::Path::new("/anywhere"))) {
+            assert_eq!(
+                path.file_name().and_then(|n| n.to_str()),
+                Some(EXE),
+                "{path:?}"
+            );
+        }
+    }
+
+    /// Nothing beside it is the packaged case, and it must still offer
+    /// somewhere to look rather than nowhere.
+    #[test]
+    fn with_nothing_beside_it_there_are_still_candidates() {
+        assert!(!exe_candidates(None).is_empty());
+    }
+
     use super::*;
 
     fn scratch(name: &str) -> PathBuf {

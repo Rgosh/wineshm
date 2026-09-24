@@ -346,9 +346,28 @@ fn launch(options: &Options, app_id: u32) -> std::io::Result<ExitCode> {
 
     let exe = match options.exe.clone() {
         Some(given) => given,
-        None => beside_this_program("wineshm.exe").ok_or_else(|| {
-            std::io::Error::other("no wineshm.exe beside this program — say where with --exe")
-        })?,
+        None => {
+            let beside = std::env::current_exe()
+                .ok()
+                .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf));
+            let looked = wineshm::launch::exe_candidates(beside.as_deref());
+            looked
+                .iter()
+                .find(|path| path.is_file())
+                .cloned()
+                .ok_or_else(|| {
+                    std::io::Error::other(format!(
+                        "no {} found — looked in {}. Say where with --exe",
+                        wineshm::launch::EXE,
+                        looked
+                            .iter()
+                            .filter_map(|path| path.parent())
+                            .map(|dir| dir.display().to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ))
+                })?
+        }
     };
     if !exe.is_file() {
         return Err(std::io::Error::other(format!(
@@ -484,12 +503,6 @@ fn launch(_options: &Options, _app_id: u32) -> std::io::Result<ExitCode> {
         "--appid finds a Steam Proton prefix, which is a Linux thing; inside the prefix, \
          run this without it",
     ))
-}
-
-/// A file sitting next to this executable.
-#[cfg(unix)]
-fn beside_this_program(name: &str) -> Option<std::path::PathBuf> {
-    Some(std::env::current_exe().ok()?.parent()?.join(name))
 }
 
 #[cfg(not(windows))]
