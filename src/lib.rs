@@ -65,6 +65,7 @@ pub mod page;
 pub mod reader;
 pub mod schedule;
 pub mod shadow;
+pub mod shutdown;
 pub mod store;
 pub mod watchdog;
 

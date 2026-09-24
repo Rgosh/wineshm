@@ -208,11 +208,81 @@ fn launch(options: &Options, app_id: u32) -> std::io::Result<ExitCode> {
         )),
         _ => why,
     })?;
+    // **The one exit the Windows side cannot tidy after itself.** Wine turns
+    // a Ctrl-C into a console control event, so `wineshm::shutdown` catches
+    // that, a closed window, a logoff and a shutdown. It does not translate
+    // SIGTERM — measured, not assumed — and SIGTERM is what a script, a
+    // session manager and Steam all send. The Windows process is killed where
+    // it stands and its pages stay behind holding the last frame.
+    //
+    // This side outlives it and knows exactly which pages it asked for, so it
+    // can finish the job. Only when nothing is publishing there any more: a
+    // note with a pulse means somebody else is serving those files, and
+    // removing them would break a bridge that is working.
+    sweep_after_the_prefix(options);
+
     Ok(if status.success() {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
     })
+}
+
+/// Take away what a killed bridge left, having checked nothing is using it.
+///
+/// **The wait is the whole of it.** A bridge writes its note every couple of
+/// seconds so that a reader can tell a running one from a killed one — see
+/// [`wineshm::liveness`] — and the note of the bridge that has just died is by
+/// definition only a moment old. Asking "is anything publishing here?" the
+/// instant the child exits therefore always answers yes, about the corpse.
+///
+/// So wait for the pulse to stop. A note that goes stale was the child's and
+/// the pages under it are dead; a note that keeps being touched belongs to
+/// something else that is alive, and taking its pages away would break a
+/// bridge that is working. The wait costs nothing in the ordinary case,
+/// because a bridge that shut down cleanly took its note with it and there is
+/// nothing here to wait for.
+#[cfg(unix)]
+fn sweep_after_the_prefix(options: &Options) {
+    let store = Store::at(&options.dir);
+
+    let give_up_at =
+        std::time::Instant::now() + wineshm::liveness::STALE + std::time::Duration::from_secs(2);
+    while wineshm::reader::live_publishing(&store).is_some() {
+        if std::time::Instant::now() >= give_up_at {
+            // Still beating after longer than a note can go untouched: somebody
+            // else is publishing here.
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+
+    let note = store.dir().join(wineshm::announce::FILE);
+    let had_note = note.is_file();
+    let _ = std::fs::remove_file(&note);
+
+    let left: Vec<&wineshm::Page> = options
+        .pages
+        .iter()
+        .filter(|page| store.path(page).exists())
+        .collect();
+    if left.is_empty() && !had_note {
+        return;
+    }
+
+    let owned: Vec<wineshm::Page> = left.iter().map(|page| (*page).clone()).collect();
+    let failures = store.remove_all(&owned);
+    if !options.quiet && !owned.is_empty() {
+        println!(
+            "the bridge inside the prefix did not shut down cleanly — took away {} page{} it \
+             left behind, so what is left of that session does not read as a live one",
+            owned.len() - failures.len(),
+            if owned.len() == 1 { "" } else { "s" }
+        );
+    }
+    for (name, why) in &failures {
+        eprintln!("wineshm: {name} could not be removed: {why}");
+    }
 }
 
 #[cfg(not(unix))]
@@ -268,6 +338,11 @@ fn run(options: &Options) -> std::io::Result<()> {
         )));
     }
 
+    // **Before anything is published, not after.** The window can be closed
+    // during start-up as easily as during a session, and the pages that exist
+    // by then are exactly the ones that would be left behind.
+    let warned = wineshm::shutdown::listen();
+
     let pacing = wineshm::Pacing::new(options.quick, options.slowest);
     let mut published: Vec<Published> = Vec::with_capacity(options.pages.len());
     for page in &options.pages {
@@ -298,6 +373,15 @@ fn run(options: &Options) -> std::io::Result<()> {
 
     if !options.quiet {
         announce_to_the_terminal(&published, &store);
+        // Said only when it is not true. A program that announces every
+        // faculty it has teaches people to skip its output, and this one line
+        // is the difference between closing the window being tidy and closing
+        // it leaving a dead session behind.
+        if !warned {
+            println!(
+                "note: this system did not let wineshm ask to be told before it is killed, so                  closing this window will leave the pages behind. Type 'exit' instead."
+            );
+        }
     }
 
     hold(&mut published, options, &note_path, &note);
@@ -306,9 +390,26 @@ fn run(options: &Options) -> std::io::Result<()> {
         report_what_it_cost(&published);
     }
 
+    if let Some(why) = wineshm::shutdown::why()
+        && !options.quiet
+    {
+        println!("{} — putting the pages back", why.told());
+    }
+
     // Everything goes, and the note goes first: while it is there, a reader
     // takes it as a promise that the pages are too.
     let _ = std::fs::remove_file(&note_path);
+
+    // **Zeroed before they are unlinked, so that failing to unlink still
+    // leaves nothing readable.** Removing the file is what normally ends it,
+    // but a page this process could not remove — a directory somebody else
+    // owns, a `--dir` on a read-only mount — would otherwise stay behind
+    // holding the last frame, which is the state this program spends the rest
+    // of its effort avoiding.
+    for one in published.iter_mut() {
+        one.blank();
+    }
+
     let pages: Vec<Page> = published.iter().map(|one| one.page().clone()).collect();
     drop(published);
 
@@ -319,6 +420,10 @@ fn run(options: &Options) -> std::io::Result<()> {
     for (name, why) in &failures {
         eprintln!("wineshm: {name} could not be removed: {why}");
     }
+
+    // The handler, if one is listening, is holding the process open waiting
+    // for exactly this.
+    wineshm::shutdown::finished();
     Ok(())
 }
 
@@ -466,7 +571,7 @@ fn hold(
         }
     };
 
-    while !stop.load(Ordering::Relaxed) {
+    while !stop.load(Ordering::Relaxed) && !wineshm::shutdown::asked_to_stop() {
         if let Some(at) = heartbeat {
             let since = last_look.elapsed();
             last_look = Instant::now();
