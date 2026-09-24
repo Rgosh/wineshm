@@ -495,7 +495,6 @@ fn launch(options: &Options, app_id: u32) -> std::io::Result<ExitCode> {
 /// when that goes quiet it blanks the pages, unlinks them and returns.
 #[cfg(unix)]
 fn supervise(options: &Options) -> std::io::Result<()> {
-    let store = Store::at(&options.dir);
     let Some(name) = options.heartbeat.as_deref() else {
         // `may_hand_over` refuses without one, so arriving here means the two
         // have drifted apart rather than that a user did something odd.
@@ -503,76 +502,33 @@ fn supervise(options: &Options) -> std::io::Result<()> {
             "the bridge handed over with no heartbeat named, which should not be possible",
         ));
     };
-    let Some(beating_page) = options.pages.iter().find(|page| page.name == name).cloned() else {
-        return Err(std::io::Error::other(format!(
-            "{name} was handed over and is not one of the published pages"
-        )));
-    };
 
-    // The note is rewritten in this process's name. It said the Windows
-    // process's pid a moment ago and that process no longer exists; a reader
-    // checking it would be told a lie about who to blame.
-    let note = wineshm::Note {
-        version: wineshm::VERSION.to_string(),
-        format: wineshm::announce::FORMAT,
-        pid: std::process::id(),
-        pages: options
-            .pages
-            .iter()
-            .map(|page| (page.clone(), wineshm::Mode::Owned))
-            .collect(),
-    };
-    let note_path = store.dir().join(wineshm::announce::FILE);
-    let rendered = note.render();
-    std::fs::write(&note_path, &rendered)?;
+    let mut watching = wineshm::supervise::Supervisor::start(
+        Store::at(&options.dir),
+        options.pages.clone(),
+        name,
+        options.blank_after,
+    )?;
 
     if !options.quiet {
         println!(
-            "the game is holding the blocks — nothing of the bridge is running now. Watching {name}"
+            "the game is holding the blocks — nothing of the bridge is running now. Watching \
+             {name}"
         );
     }
 
-    let reader = wineshm::reader::Reader::open(&store, &beating_page)?;
-    let mut buffer = vec![0u8; beating_page.bytes];
-    let mut shadow = wineshm::Shadow::new(beating_page.bytes);
-    let mut dog = wineshm::Watchdog::new(options.blank_after);
-    let mut last_look = Instant::now();
-    let mut last_beat = Instant::now();
-
     loop {
         std::thread::sleep(wineshm::watch::LOOK_EVERY);
-
-        let since = last_look.elapsed();
-        last_look = Instant::now();
-        let stirred = reader.read_into(&mut buffer).is_ok() && shadow.changed(&buffer);
-
-        if wineshm::liveness::due_to_beat(last_beat.elapsed(), wineshm::liveness::BEAT) {
-            let _ = std::fs::write(&note_path, &rendered);
-            last_beat = Instant::now();
+        if watching.look() == wineshm::supervise::Seen::WriterGone {
+            if !options.quiet {
+                println!(
+                    "nothing has written to {name} for {:.0}s — the game has gone, so its blocks \
+                     went with it",
+                    watching.quiet_for().as_secs_f64()
+                );
+            }
+            return Ok(());
         }
-
-        if dog.saw(stirred, since) != wineshm::watchdog::Verdict::Blank {
-            continue;
-        }
-
-        if !options.quiet {
-            println!(
-                "nothing has written to {name} for {:.0}s — the game has gone, so its blocks go \
-                 too",
-                dog.quiet_for().as_secs_f64()
-            );
-        }
-
-        // The note first: while it is there a reader takes it as a promise
-        // that the pages are too.
-        let _ = std::fs::remove_file(&note_path);
-        for page in &options.pages {
-            let _ = store.blank(page);
-        }
-        for (name, why) in &store.remove_all(&options.pages) {
-            eprintln!("wineshm: {name} could not be removed: {why}");
-        }
-        return Ok(());
     }
 }
 

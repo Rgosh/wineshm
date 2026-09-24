@@ -1,6 +1,6 @@
 # Maintainer: Rgosh <rgoshbbb@gmail.com>
 pkgname=wineshm
-pkgver=0.5.0
+pkgver=0.6.0
 pkgrel=1
 pkgdesc="Expose a Windows program's named shared memory to Linux, from inside a Wine or Proton prefix"
 arch=('x86_64')

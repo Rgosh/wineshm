@@ -70,6 +70,8 @@ pub mod schedule;
 pub mod shadow;
 pub mod shutdown;
 pub mod store;
+#[cfg(unix)]
+pub mod supervise;
 pub mod watch;
 pub mod watchdog;
 
