@@ -26,6 +26,17 @@ fn main() -> ExitCode {
         }
     };
 
+    // Reading the files a `--pages-from` named, which parsing the arguments
+    // deliberately did not do: an argument parser that touches the disk cannot
+    // be tested as a function of its arguments.
+    let options = match read_recipes(options) {
+        Ok(options) => options,
+        Err(why) => {
+            eprintln!("wineshm: {why}");
+            return ExitCode::from(2);
+        }
+    };
+
     match options.action {
         Action::Help => {
             print!("{}", wineshm::cli::HELP);
@@ -76,6 +87,28 @@ fn main() -> ExitCode {
             }
         },
     }
+}
+
+/// Fold every `--pages-from` file into the options, then check the result.
+///
+/// The path is in every complaint. A file that is not there, or that has a bad
+/// line in it, is something somebody is about to go and edit, and "no such
+/// file" without saying which one is an invitation to guess.
+fn read_recipes(mut options: Options) -> Result<Options, String> {
+    if options.recipes.is_empty() {
+        return Ok(options);
+    }
+    let paths = std::mem::take(&mut options.recipes);
+    for path in &paths {
+        let text =
+            std::fs::read_to_string(path).map_err(|why| format!("{}: {why}", path.display()))?;
+        let recipe =
+            wineshm::recipe::parse(&text).map_err(|why| format!("{}: {why}", path.display()))?;
+        wineshm::cli::take_recipe(&mut options, recipe);
+    }
+    wineshm::cli::check(&options)?;
+    options.recipes = paths;
+    Ok(options)
 }
 
 /// Measure sections that already exist in this prefix.

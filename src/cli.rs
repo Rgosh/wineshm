@@ -62,6 +62,9 @@ pub struct Options {
     pub exe: Option<PathBuf>,
     /// Section names to measure, for [`Action::Probe`].
     pub probes: Vec<String>,
+    /// Files describing pages to publish — see [`crate::recipe`]. Read by the
+    /// caller, because parsing arguments reads nothing.
+    pub recipes: Vec<PathBuf>,
 }
 
 impl Default for Options {
@@ -78,6 +81,7 @@ impl Default for Options {
             blank_after: crate::watchdog::BLANK_AFTER,
             exe: None,
             probes: Vec::new(),
+            recipes: Vec::new(),
         }
     }
 }
@@ -106,6 +110,9 @@ OPTIONS:
     --exe PATH           Which wineshm.exe to start [default: beside this one]
     --preset NAME        A ready-made page list. One of: assetto-corsa, rfactor2
     --page NAME:SIZE     One page. Repeatable. Size may carry K or M.
+    --pages-from FILE    A file of NAME:SIZE lines describing a program, with
+                         '#' comments and an optional 'heartbeat NAME'.
+                         Repeatable. This is how to add a game without a fork
     --dir PATH           Where to publish [default: /dev/shm]
     --heartbeat NAME     The block that changes while the writer is alive. When
                          it goes quiet every block is zeroed, so a game that has
@@ -133,7 +140,6 @@ where
     I: IntoIterator<Item = String>,
 {
     let mut options = Options::default();
-    let mut presets_used = false;
     let mut preset_named: Option<String> = None;
     let mut args = args.into_iter();
 
@@ -185,6 +191,7 @@ where
                 options.blank_after = millis(&value("--blank-after")?, "--blank-after")?
             }
             "--dir" => options.dir = PathBuf::from(value("--dir")?),
+            "--pages-from" => options.recipes.push(PathBuf::from(value("--pages-from")?)),
             "--quick" => options.quick = millis(&value("--quick")?, "--quick")?,
             "--slowest" => options.slowest = millis(&value("--slowest")?, "--slowest")?,
             "--page" => {
@@ -200,7 +207,6 @@ where
                         crate::page::PRESETS.join(", ")
                     )
                 })?;
-                presets_used = true;
                 preset_named = Some(name);
                 options.pages.extend(pages);
             }
@@ -210,16 +216,6 @@ where
         }
     }
 
-    // A page asked for twice is a mistake worth naming rather than a section
-    // created twice: the second `CreateFileMapping` hands back the first, and
-    // the program would report two pages while serving one.
-    if let Some(twice) = first_repeat(&options.pages) {
-        return Err(format!("{twice} was asked for more than once"));
-    }
-
-    // Launching passes the pages through to the copy it starts, so it needs
-    // them for the same reason running does.
-    let needs_pages = matches!(options.action, Action::Run | Action::Launch { .. });
     // **A preset knows which of its blocks moves, so it says so.** Without
     // this every caller has to know that Assetto Corsa's physics block is the
     // live one and its static block is not — and getting that wrong blanks a
@@ -229,6 +225,30 @@ where
         && let Some(beat) = crate::page::preset_heartbeat(name)
     {
         options.heartbeat = Some(beat.to_string());
+    }
+
+    // **Checked now only if nothing else is still to come.** A `--pages-from`
+    // has not been read yet — parsing arguments reads no files — so a page
+    // list that looks empty here may not be, and a `--heartbeat` may name a
+    // block a file is about to publish. The caller reads the files and calls
+    // [`check`] again.
+    if options.recipes.is_empty() {
+        check(&options)?;
+    }
+
+    Ok(options)
+}
+
+/// Everything that has to be true before the pages can be published.
+///
+/// Apart from [`parse`] because it has to run twice: once on the arguments,
+/// and again after any `--pages-from` file has been read into them.
+pub fn check(options: &Options) -> Result<(), String> {
+    // A page asked for twice is a mistake worth naming rather than a section
+    // created twice: the second `CreateFileMapping` hands back the first, and
+    // the program would report two pages while serving one.
+    if let Some(twice) = first_repeat(&options.pages) {
+        return Err(format!("{twice} was asked for more than once"));
     }
 
     // A heartbeat naming a block that is not being published watches nothing,
@@ -241,15 +261,28 @@ where
         ));
     }
 
+    // Launching passes the pages through to the copy it starts, so it needs
+    // them for the same reason running does.
+    let needs_pages = matches!(options.action, Action::Run | Action::Launch { .. });
     if needs_pages && options.pages.is_empty() {
-        return Err(if presets_used {
-            "that preset is empty".to_string()
-        } else {
-            "nothing to publish — give --preset or at least one --page".to_string()
-        });
+        return Err(
+            "nothing to publish — give --preset, --pages-from or at least one --page".to_string(),
+        );
     }
 
-    Ok(options)
+    Ok(())
+}
+
+/// Fold a file's description of a program into what the arguments asked for.
+///
+/// The file's heartbeat is taken only when nothing on the command line named
+/// one, for the same reason a preset's is: what somebody typed just now beats
+/// what a file said earlier.
+pub fn take_recipe(options: &mut Options, recipe: crate::recipe::Recipe) {
+    options.pages.extend(recipe.pages);
+    if options.heartbeat.is_none() {
+        options.heartbeat = recipe.heartbeat;
+    }
 }
 
 fn millis(text: &str, flag: &str) -> Result<Duration, String> {
@@ -450,6 +483,96 @@ mod tests {
                 .expect("parses")
                 .quiet
         );
+    }
+
+    /// **The check has to wait.** `--pages-from` names a file that has not
+    /// been read when the arguments are parsed, so a page list that is empty
+    /// here is not an empty page list.
+    #[test]
+    fn a_recipe_file_defers_the_check_that_there_is_anything_to_publish() {
+        let options = parse_of(&["--pages-from", "somewhere.txt"]).expect("parses");
+        assert!(options.pages.is_empty());
+        assert_eq!(options.recipes.len(), 1);
+
+        // And the same arguments without the file are still refused.
+        assert!(parse_of(&[]).is_err());
+    }
+
+    /// A heartbeat on the command line naming a block a file publishes is the
+    /// ordinary way to override one, and checking too early would refuse it.
+    #[test]
+    fn a_heartbeat_for_a_block_a_file_will_publish_is_not_refused_early() {
+        let options = parse_of(&["--pages-from", "f.txt", "--heartbeat", "later"]).expect("parses");
+        assert_eq!(options.heartbeat.as_deref(), Some("later"));
+    }
+
+    #[test]
+    fn the_check_still_catches_it_once_the_file_is_in() {
+        let mut options =
+            parse_of(&["--pages-from", "f.txt", "--heartbeat", "absent"]).expect("ok");
+        crate::cli::take_recipe(
+            &mut options,
+            crate::recipe::Recipe {
+                pages: vec![Page::parse("a:16").expect("a page")],
+                heartbeat: None,
+            },
+        );
+        let why = check(&options).expect_err("refused");
+        assert!(why.contains("absent"), "{why}");
+    }
+
+    /// What somebody typed just now beats what a file said earlier — the same
+    /// rule a preset's heartbeat follows.
+    #[test]
+    fn a_heartbeat_on_the_command_line_beats_the_files() {
+        let mut options = parse_of(&["--pages-from", "f.txt", "--heartbeat", "mine"]).expect("ok");
+        crate::cli::take_recipe(
+            &mut options,
+            crate::recipe::Recipe {
+                pages: vec![
+                    Page::parse("mine:16").expect("a page"),
+                    Page::parse("theirs:16").expect("a page"),
+                ],
+                heartbeat: Some("theirs".to_string()),
+            },
+        );
+        assert_eq!(options.heartbeat.as_deref(), Some("mine"));
+        assert!(check(&options).is_ok());
+    }
+
+    #[test]
+    fn a_file_brings_its_own_heartbeat_when_nothing_else_named_one() {
+        let mut options = parse_of(&["--pages-from", "f.txt"]).expect("ok");
+        crate::cli::take_recipe(
+            &mut options,
+            crate::recipe::Recipe {
+                pages: vec![Page::parse("beat:16").expect("a page")],
+                heartbeat: Some("beat".to_string()),
+            },
+        );
+        assert_eq!(options.heartbeat.as_deref(), Some("beat"));
+    }
+
+    /// A file and a preset naming the same page is the collision the check
+    /// exists for, and it can only be seen after the file is read.
+    #[test]
+    fn a_page_a_preset_already_has_is_caught_after_the_file_is_read() {
+        let mut options = parse_of(&["--preset", "ac", "--pages-from", "f.txt"]).expect("ok");
+        crate::cli::take_recipe(
+            &mut options,
+            crate::recipe::Recipe {
+                pages: vec![Page::parse("acpmf_physics:2048").expect("a page")],
+                heartbeat: None,
+            },
+        );
+        let why = check(&options).expect_err("refused");
+        assert!(why.contains("acpmf_physics"), "{why}");
+    }
+
+    #[test]
+    fn the_help_mentions_the_file_and_the_probe() {
+        assert!(HELP.contains("--pages-from"), "{HELP}");
+        assert!(HELP.contains("--probe"), "{HELP}");
     }
 
     #[test]

@@ -1,0 +1,31 @@
+# A program this crate has no preset for.
+#
+# Two things are needed per block: the name the program uses, and how many
+# bytes it is.
+#
+# THE NAME is whatever the program's own documentation, or its telemetry
+# plugin, calls the shared memory. It is a Win32 object name, so it may look
+# like `Local\Something` or `$Something$`.
+#
+# THE SIZE is the part that is worth measuring rather than guessing. Start the
+# program, then, inside the same prefix:
+#
+#     wineshm.exe --probe THE_NAME
+#
+# It reports the size as a range, because Windows reports mapped memory in
+# whole 4 KiB pages and a 2048-byte block is indistinguishable from a 4096-byte
+# one from outside. Use it to check that the number you have is in the right
+# range at all — being an order of magnitude out is the mistake that costs
+# hours, not being 2048 out.
+#
+# Getting it too small is the dangerous direction: the block maps, everything
+# looks fine, and every field past your size is simply absent.
+
+# THE_NAME:2048
+# ANOTHER_NAME:16K
+
+# Optional, and worth having: the one block that changes constantly while the
+# program is running. Naming it lets the bridge tell "the program has exited"
+# from "the program is idle", and zero the blocks rather than leave a dead
+# session readable. Leave it out and nothing is ever blanked.
+# heartbeat THE_NAME

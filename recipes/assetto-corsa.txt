@@ -1,0 +1,22 @@
+# Assetto Corsa and Assetto Corsa Competizione.
+#
+# The same file serves both: they publish the same four names, and the sizes
+# here are Competizione's, which are the larger of the two.
+#
+# This is what --preset assetto-corsa does. It is written out as a file so
+# that there is a worked example to copy for a program that has no preset.
+
+acpmf_physics:2048
+acpmf_graphics:2048
+acpmf_static:2048
+acpmf_crewchief:15660
+
+# The block that changes while the game is running. Naming it is what lets the
+# bridge notice the game has gone and zero everything, so the last frame of a
+# session that ended does not read as a live one.
+#
+# It has to be a block that moves constantly. The static block looks like the
+# obvious choice — the car and the track are in it — and it is the wrong one:
+# it is written once a session and never again, so it would look dead
+# immediately and blank a session that is still running.
+heartbeat acpmf_physics
