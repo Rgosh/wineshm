@@ -1,0 +1,85 @@
+# Building the thing that is published, from the tag that names it.
+#
+# **This workflow exists because a release once shipped the wrong binary.**
+# v0.4.0 was uploaded by hand from a local `target/` directory that had been
+# built about a minute before the commit which bumped the version. The source
+# was right, the tag was right, and the `.exe` on the release page stamped
+# itself 0.3.0 — and `0.3.0` and `0.4.0` are the same number of characters, so
+# the file was even the same size as the correct one. Nothing looked wrong.
+#
+# What made it more than cosmetic: a program shipping this alongside itself
+# reads the marker out of the download and refuses it when it disagrees with
+# the release it came from. That check is right, and it meant the published
+# bridge could not be installed at all.
+#
+# A human cannot be asked to remember to rebuild. The machine can be asked to
+# never have a stale directory in the first place.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The existing tag to build and upload
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    name: Build from the tag and attach the binary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+
+      - name: The mingw toolchain the gnu target links with
+        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64
+
+      # **Before building, not after.** A tag that disagrees with `Cargo.toml`
+      # produces a binary that is correct for neither, and the disagreement is
+      # the thing worth failing on rather than the artefact it would make.
+      - name: The tag and Cargo.toml agree
+        run: |
+          tag="${{ inputs.tag || github.ref_name }}"
+          manifest="$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
+          if [ "${tag#v}" != "$manifest" ]; then
+            echo "::error::tag $tag but Cargo.toml says $manifest"
+            exit 1
+          fi
+          echo "version=$manifest" >> "$GITHUB_ENV"
+
+      - run: cargo build --release --target x86_64-pc-windows-gnu
+
+      # The same check the gate runs, for the reason it exists there — but here
+      # it is guarding the bytes that are about to be published rather than a
+      # build nobody will see.
+      - name: The version marker is in the binary that will be published
+        run: |
+          if grep -a -q "WINESHM-VERSION=$version;" \
+              target/x86_64-pc-windows-gnu/release/wineshm.exe; then
+            echo "found WINESHM-VERSION=$version in the binary"
+          else
+            echo "::error::the built binary does not stamp itself $version"
+            exit 1
+          fi
+
+      # `--clobber` so a re-run replaces the asset rather than failing, which
+      # is what recovering from a bad upload needs to look like.
+      - name: Attach it to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ inputs.tag || github.ref_name }}"
+          gh release view "$tag" >/dev/null 2>&1 \
+            || gh release create "$tag" --title "wineshm ${tag#v}" --generate-notes
+          gh release upload "$tag" \
+            target/x86_64-pc-windows-gnu/release/wineshm.exe --clobber
