@@ -27,6 +27,8 @@ pub enum Action {
     Verify,
     /// Measure named sections that already exist inside this prefix, and stop.
     Probe,
+    /// Show, live, which published blocks are actually changing.
+    Watch,
     /// Find this Steam game's prefix, and start the Windows build of this
     /// program inside it. Linux side.
     Launch {
@@ -124,6 +126,9 @@ OPTIONS:
     --probe NAME         Measure a section the game has already made, and say
                          how big it is. Repeatable. Run this while the game is
                          running, to find out what --page size to ask for
+    --watch              Show which published blocks are actually changing, once
+                         a second, until stopped. Runs on Linux, outside the
+                         prefix, while the game is running
     --verify             Report what is published here already, then stop
     --json               With --verify, report as JSON instead of a table
     --quiet              Say nothing but errors
@@ -172,6 +177,7 @@ where
                 });
             }
             "--verify" => options.action = Action::Verify,
+            "--watch" => options.action = Action::Watch,
             "--probe" => {
                 options.probes.push(value("--probe")?);
                 options.action = Action::Probe;

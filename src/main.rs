@@ -12,9 +12,7 @@ use std::io::BufRead;
 use std::sync::Arc;
 #[cfg(windows)]
 use std::sync::atomic::{AtomicBool, Ordering};
-#[cfg(windows)]
 use std::time::{Duration, Instant};
-#[cfg(windows)]
 use wineshm::Page;
 
 fn main() -> ExitCode {
@@ -59,6 +57,13 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Action::Watch => match watch(&options) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(why) => {
+                eprintln!("wineshm: {why}");
+                ExitCode::FAILURE
+            }
+        },
         Action::Probe => match probe(&options) {
             Ok(all_there) => {
                 if all_there {
@@ -87,6 +92,98 @@ fn main() -> ExitCode {
             }
         },
     }
+}
+
+/// Show, live, which published blocks are actually changing.
+///
+/// **On the Linux side, because that is where the question is asked.** The
+/// pages are ordinary files, so nothing here needs Win32 or the prefix, and
+/// somebody mid-session can look at this in a terminal beside the game.
+#[cfg(unix)]
+fn watch(options: &Options) -> std::io::Result<()> {
+    use wineshm::watch::{Activity, LOOK_EVERY, STILL_AFTER};
+
+    let store = Store::at(&options.dir);
+
+    // What was asked for, or failing that whatever is published here. Asking
+    // is for the case the note does not cover: a page published by something
+    // that is not this program at all.
+    let pages: Vec<Page> = if options.pages.is_empty() {
+        let note = wineshm::reader::publishing(&store).ok_or_else(|| {
+            std::io::Error::other(format!(
+                "nothing is publishing in {} — name the blocks with --page if they came from \
+                 somewhere else",
+                store.dir().display()
+            ))
+        })?;
+        note.pages.into_iter().map(|(page, _)| page).collect()
+    } else {
+        options.pages.clone()
+    };
+
+    let mut watching = Vec::with_capacity(pages.len());
+    for page in &pages {
+        let reader = wineshm::reader::Reader::open(&store, page)?;
+        watching.push((
+            page.clone(),
+            reader,
+            wineshm::Shadow::new(page.bytes),
+            Activity::default(),
+            vec![0u8; page.bytes],
+        ));
+    }
+
+    println!(
+        "watching {} block{} in {} — Ctrl-C to stop",
+        watching.len(),
+        if watching.len() == 1 { "" } else { "s" },
+        store.dir().display()
+    );
+
+    let mut period = Instant::now();
+    let mut last_look = Instant::now();
+    loop {
+        std::thread::sleep(LOOK_EVERY);
+        let since = last_look.elapsed();
+        last_look = Instant::now();
+
+        for (_, reader, shadow, seen, buffer) in watching.iter_mut() {
+            // A page that has gone is not a reason to stop: the bridge may be
+            // restarting, and saying so once a second is the report.
+            if reader.read_into(buffer).is_err() {
+                seen.saw(false, since);
+                continue;
+            }
+            seen.saw(shadow.changed(buffer), since);
+        }
+
+        if period.elapsed() < Duration::from_secs(1) {
+            continue;
+        }
+        period = Instant::now();
+
+        for (page, _, _, seen, _) in watching.iter_mut() {
+            let doing = seen.doing(STILL_AFTER);
+            let detail = match seen.since_change() {
+                Some(since) if doing == wineshm::watch::Doing::Still => {
+                    format!("last changed {:.0}s ago", since.as_secs_f32())
+                }
+                Some(_) => format!("{}% of looks", seen.percent()),
+                None => "nothing has ever written to it".to_string(),
+            };
+            println!("  {:<34}{:<9}{detail}", page.name, doing.word());
+            seen.new_period();
+        }
+        println!();
+    }
+}
+
+#[cfg(not(unix))]
+fn watch(_options: &Options) -> std::io::Result<()> {
+    Err(std::io::Error::other(
+        "--watch reads the published files, which is a Linux-side thing; run it outside the \
+         prefix",
+    ))
 }
 
 /// Fold every `--pages-from` file into the options, then check the result.

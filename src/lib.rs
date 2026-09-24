@@ -69,6 +69,7 @@ pub mod schedule;
 pub mod shadow;
 pub mod shutdown;
 pub mod store;
+pub mod watch;
 pub mod watchdog;
 
 #[cfg(windows)]
