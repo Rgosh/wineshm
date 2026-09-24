@@ -57,6 +57,7 @@
 
 pub mod announce;
 pub mod cli;
+pub mod handoff;
 #[cfg(unix)]
 pub mod launch;
 pub mod liveness;

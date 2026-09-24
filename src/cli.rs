@@ -64,6 +64,9 @@ pub struct Options {
     pub exe: Option<PathBuf>,
     /// Section names to measure, for [`Action::Probe`].
     pub probes: Vec<String>,
+    /// Leave the section in the writer's hands and exit once it is holding it
+    /// — see [`crate::handoff`].
+    pub handoff: bool,
     /// Files describing pages to publish — see [`crate::recipe`]. Read by the
     /// caller, because parsing arguments reads nothing.
     pub recipes: Vec<PathBuf>,
@@ -83,6 +86,7 @@ impl Default for Options {
             blank_after: crate::watchdog::BLANK_AFTER,
             exe: None,
             probes: Vec::new(),
+            handoff: false,
             recipes: Vec::new(),
         }
     }
@@ -121,6 +125,9 @@ OPTIONS:
                          exited stops reading as a live session. A preset sets
                          this itself; give it only to override
     --blank-after MS     How long it may be quiet first [default: 5000]
+    --handoff            Once the program is writing, let it hold the blocks and
+                         exit, so nothing of this is left running during a
+                         session. Needs --appid, which stays behind to watch
     --quick MS           Pace while a mirrored page is changing [default: 4]
     --slowest MS         Slowest pace for a quiet page [default: 64]
     --probe NAME         Measure a section the game has already made, and say
@@ -191,6 +198,7 @@ where
                 options.action = Action::Launch { app_id };
             }
             "--quiet" => options.quiet = true,
+            "--handoff" => options.handoff = true,
             "--json" => options.json = true,
             "--heartbeat" => options.heartbeat = Some(value("--heartbeat")?),
             "--blank-after" => {

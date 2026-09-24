@@ -85,7 +85,8 @@ fn main() -> ExitCode {
             }
         },
         Action::Run => match run(&options) {
-            Ok(()) => ExitCode::SUCCESS,
+            Ok(true) => ExitCode::from(wineshm::handoff::HANDED_OVER),
+            Ok(false) => ExitCode::SUCCESS,
             Err(why) => {
                 eprintln!("wineshm: {why}");
                 ExitCode::FAILURE
@@ -386,6 +387,20 @@ fn launch(options: &Options, app_id: u32) -> std::io::Result<ExitCode> {
     }
     args.push("--dir".to_string());
     args.push(options.dir.to_string_lossy().into_owned());
+    // **The heartbeat has to travel.** This side worked it out — from a preset,
+    // a file or the flag — and passes the pages one at a time, so the copy
+    // inside the prefix has no preset left to derive it from. Without it the
+    // blocks of a session that ended are never blanked, and --handoff is
+    // refused outright because nothing could be left watching.
+    if let Some(name) = options.heartbeat.as_deref() {
+        args.push("--heartbeat".to_string());
+        args.push(name.to_string());
+        args.push("--blank-after".to_string());
+        args.push(options.blank_after.as_millis().to_string());
+    }
+    if options.handoff {
+        args.push("--handoff".to_string());
+    }
     if options.quiet {
         args.push("--quiet".to_string());
     }
@@ -413,13 +428,38 @@ fn launch(options: &Options, app_id: u32) -> std::io::Result<ExitCode> {
         command.current_dir(dir);
     }
 
-    let status = command.status().map_err(|why| match why.kind() {
-        std::io::ErrorKind::NotFound => std::io::Error::other(format!(
-            "{} is not there — and no Steam Proton was found for {app_id} either",
-            program.display()
-        )),
-        _ => why,
-    })?;
+    // **A loop, because a session is not the whole story.** With --handoff the
+    // copy inside the prefix leaves as soon as the game is holding the
+    // section, and this process watches the pages instead. When the game goes,
+    // the pages go with it — and the name goes too, so the *next* session
+    // would make its own section that this side cannot see. Starting the
+    // bridge again is what makes the second race work like the first.
+    let status = loop {
+        let began = std::time::Instant::now();
+        let status = command.status().map_err(|why| match why.kind() {
+            std::io::ErrorKind::NotFound => std::io::Error::other(format!(
+                "{} is not there — and no Steam Proton was found for {app_id} either",
+                program.display()
+            )),
+            _ => why,
+        })?;
+
+        if status.code() != Some(i32::from(wineshm::handoff::HANDED_OVER)) {
+            break status;
+        }
+
+        supervise(options)?;
+
+        // A session that ended the instant it began is something wrong, not a
+        // race. Backing off stops a fault turning into a loop that starts Wine
+        // as fast as the machine can.
+        if began.elapsed() < Duration::from_secs(2) {
+            std::thread::sleep(Duration::from_secs(2));
+        }
+        if !options.quiet {
+            println!("starting the bridge again, ready for the next session");
+        }
+    };
     // **The one exit the Windows side cannot tidy after itself.** Wine turns
     // a Ctrl-C into a console control event, so `wineshm::shutdown` catches
     // that, a closed window, a logoff and a shutdown. It does not translate
@@ -438,6 +478,102 @@ fn launch(options: &Options, app_id: u32) -> std::io::Result<ExitCode> {
     } else {
         ExitCode::FAILURE
     })
+}
+
+/// Watch pages the writer is now holding, and take them away when it goes.
+///
+/// **This is the other half of [`wineshm::handoff`], and without it handing
+/// over would be the worst bug this program could ship.** Once the copy inside
+/// the prefix has left, nothing in the prefix can notice the game exiting. The
+/// pages would stay for ever holding the last frame, and — measured — the next
+/// run of the game finds no section of that name, makes its own, and writes
+/// somewhere this side cannot see. A live race beside a frozen file that looks
+/// exactly like live telemetry.
+///
+/// So this process takes the duty on: it keeps the note's pulse beating, so a
+/// reader still sees something alive; it watches the block that moves; and
+/// when that goes quiet it blanks the pages, unlinks them and returns.
+#[cfg(unix)]
+fn supervise(options: &Options) -> std::io::Result<()> {
+    let store = Store::at(&options.dir);
+    let Some(name) = options.heartbeat.as_deref() else {
+        // `may_hand_over` refuses without one, so arriving here means the two
+        // have drifted apart rather than that a user did something odd.
+        return Err(std::io::Error::other(
+            "the bridge handed over with no heartbeat named, which should not be possible",
+        ));
+    };
+    let Some(beating_page) = options.pages.iter().find(|page| page.name == name).cloned() else {
+        return Err(std::io::Error::other(format!(
+            "{name} was handed over and is not one of the published pages"
+        )));
+    };
+
+    // The note is rewritten in this process's name. It said the Windows
+    // process's pid a moment ago and that process no longer exists; a reader
+    // checking it would be told a lie about who to blame.
+    let note = wineshm::Note {
+        version: wineshm::VERSION.to_string(),
+        format: wineshm::announce::FORMAT,
+        pid: std::process::id(),
+        pages: options
+            .pages
+            .iter()
+            .map(|page| (page.clone(), wineshm::Mode::Owned))
+            .collect(),
+    };
+    let note_path = store.dir().join(wineshm::announce::FILE);
+    let rendered = note.render();
+    std::fs::write(&note_path, &rendered)?;
+
+    if !options.quiet {
+        println!(
+            "the game is holding the blocks — nothing of the bridge is running now. Watching {name}"
+        );
+    }
+
+    let reader = wineshm::reader::Reader::open(&store, &beating_page)?;
+    let mut buffer = vec![0u8; beating_page.bytes];
+    let mut shadow = wineshm::Shadow::new(beating_page.bytes);
+    let mut dog = wineshm::Watchdog::new(options.blank_after);
+    let mut last_look = Instant::now();
+    let mut last_beat = Instant::now();
+
+    loop {
+        std::thread::sleep(wineshm::watch::LOOK_EVERY);
+
+        let since = last_look.elapsed();
+        last_look = Instant::now();
+        let stirred = reader.read_into(&mut buffer).is_ok() && shadow.changed(&buffer);
+
+        if wineshm::liveness::due_to_beat(last_beat.elapsed(), wineshm::liveness::BEAT) {
+            let _ = std::fs::write(&note_path, &rendered);
+            last_beat = Instant::now();
+        }
+
+        if dog.saw(stirred, since) != wineshm::watchdog::Verdict::Blank {
+            continue;
+        }
+
+        if !options.quiet {
+            println!(
+                "nothing has written to {name} for {:.0}s — the game has gone, so its blocks go \
+                 too",
+                dog.quiet_for().as_secs_f64()
+            );
+        }
+
+        // The note first: while it is there a reader takes it as a promise
+        // that the pages are too.
+        let _ = std::fs::remove_file(&note_path);
+        for page in &options.pages {
+            let _ = store.blank(page);
+        }
+        for (name, why) in &store.remove_all(&options.pages) {
+            eprintln!("wineshm: {name} could not be removed: {why}");
+        }
+        return Ok(());
+    }
 }
 
 /// Take away what a killed bridge left, having checked nothing is using it.
@@ -506,7 +642,7 @@ fn launch(_options: &Options, _app_id: u32) -> std::io::Result<ExitCode> {
 }
 
 #[cfg(not(windows))]
-fn run(_options: &Options) -> std::io::Result<()> {
+fn run(_options: &Options) -> std::io::Result<bool> {
     Err(std::io::Error::other(
         "this has to run inside the Wine or Proton prefix, as a Windows program — \
          build it for x86_64-pc-windows-gnu and start it in there",
@@ -514,7 +650,7 @@ fn run(_options: &Options) -> std::io::Result<()> {
 }
 
 #[cfg(windows)]
-fn run(options: &Options) -> std::io::Result<()> {
+fn run(options: &Options) -> std::io::Result<bool> {
     use wineshm::win::Published;
 
     let store = Store::at(&options.dir);
@@ -590,10 +726,20 @@ fn run(options: &Options) -> std::io::Result<()> {
         }
     }
 
-    hold(&mut published, options, &note_path, &note);
+    let ending = hold(&mut published, options, &note_path, &note);
 
     if !options.quiet {
         report_what_it_cost(&published);
+    }
+
+    // **Handed over: everything stays exactly as it is.** The pages are not
+    // blanked and not unlinked, and the note is left where it is, because the
+    // section now belongs to the writer and the Linux half is about to take
+    // over beating the note and watching for the writer leaving. Tidying up
+    // here would take away the pages of a session that is running.
+    if matches!(ending, Ending::HandedOver) {
+        wineshm::shutdown::finished();
+        return Ok(true);
     }
 
     if let Some(why) = wineshm::shutdown::why()
@@ -630,7 +776,7 @@ fn run(options: &Options) -> std::io::Result<()> {
     // The handler, if one is listening, is holding the process open waiting
     // for exactly this.
     wineshm::shutdown::finished();
-    Ok(())
+    Ok(false)
 }
 
 #[cfg(windows)]
@@ -722,12 +868,22 @@ fn summarise(pages: &[Page], _store: &Store, failures: &[(String, std::io::Error
 
 /// Hold the pages until somebody says stop, copying the mirrored ones.
 #[cfg(windows)]
+/// How the holding ended.
+#[cfg(windows)]
+enum Ending {
+    /// Somebody asked it to stop.
+    Asked,
+    /// The writer is holding the section and this process is no longer needed.
+    HandedOver,
+}
+
+#[cfg(windows)]
 fn hold(
     published: &mut [wineshm::win::Published],
     options: &Options,
     note_path: &std::path::Path,
     note: &wineshm::Note,
-) {
+) -> Ending {
     use wineshm::Schedule;
 
     let stop = Arc::new(AtomicBool::new(false));
@@ -747,6 +903,7 @@ fn hold(
     // A deadline per page, because each backs off at its own rate: a static
     // block that never changes should not keep a physics block's pace. The
     // arithmetic is in `wineshm::Schedule`, where it can be tested.
+    let all_owned = mirroring.is_empty();
     let mut schedule = Schedule::new(mirroring.len());
     let began = Instant::now();
     let ceiling = options.slowest.max(Duration::from_millis(100));
@@ -784,6 +941,22 @@ fn hold(
             let stirred = published
                 .get_mut(at)
                 .is_some_and(wineshm::win::Published::stirred);
+
+            // **Bytes changing in a page this process created and never writes
+            // to is the proof that the writer has a handle of its own.** From
+            // here the section outlives this program, so the only thing left
+            // to do is stop being fifty megabytes of Wine.
+            if options.handoff && wineshm::handoff::may_hand_over(all_owned, true, stirred) {
+                if !options.quiet {
+                    println!(
+                        "{} is being written to, so the program is holding the section itself — \
+                         handing over and leaving",
+                        options.heartbeat.as_deref().unwrap_or_default()
+                    );
+                }
+                return Ending::HandedOver;
+            }
+
             match dog.saw(stirred, since) {
                 wineshm::watchdog::Verdict::Blank => {
                     for one in published.iter_mut() {
@@ -831,6 +1004,7 @@ fn hold(
             std::thread::sleep(nap);
         }
     }
+    Ending::Asked
 }
 
 /// Watch standard input for a reason to stop.

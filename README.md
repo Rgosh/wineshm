@@ -122,6 +122,7 @@ wineshm.exe --page MySharedThing:4096 --page OtherThing:1M
 | `--pages-from FILE` | A file describing a program. Repeatable |
 | `--probe NAME` | Measure a section the program has already made |
 | `--watch` | Show, live, which blocks are actually changing |
+| `--handoff` | Leave once the game holds the section. Needs `--appid` |
 | `--verify` | Report what is published here already, then stop |
 | `--json` | With `--verify`, report as JSON instead of a table |
 | `--quiet` | Say nothing but errors |
@@ -394,6 +395,68 @@ pages would break a bridge that works.
 
 Neither covers `SIGKILL` or the power going out, and nothing can. That is what
 the note's pulse is for, below.
+
+## Nothing running during the session
+
+**A named section in Wine is a counted object.** This program creates one
+backed by a file under `/dev/shm`; the game asks for the same name and is
+handed the same object. From that moment two processes hold it — and if this
+one lets go, the game's handle keeps it alive and the game's writes go on
+landing in the file with no bridge in existence.
+
+Measured, then built: the bridge was killed outright and a writer's counter
+went on advancing in `/dev/shm`.
+
+```bash
+wineshm --appid 244210 --preset assetto-corsa --handoff
+```
+
+The copy inside the prefix waits until the game is actually writing, then
+leaves. What it costs before and after, measured on one machine with Proton
+9.0:
+
+| | holding the section | after handing over |
+|---|---|---|
+| our Wine processes | `start.exe` 17 MB + bridge 22 MB | **none** |
+| our Linux process | — | 2.6 MB |
+| **ours in total** | **≈39 MB** | **2.6 MB** |
+
+Processor time was never the problem: an owned page needs no copying, and the
+measured idle cost was a quarter of one percent of a core. What went away is a
+Wine process and a wineserver client, resident for a whole session for the sake
+of a handle nobody needed any more.
+
+### Why it needs somebody watching
+
+The same experiment showed the other half, and it is the reason `--handoff`
+needs `--appid` rather than working on its own.
+
+When the game exits it releases the name, and **the file stays**, holding the
+last frame for ever. Start the game again and it finds no section of that name,
+makes its own — backed by nothing this side can see — and writes into that.
+Measured: the second run reported `already existed = false` while the file sat
+frozen on the previous session's last frame. A live race beside a file that
+looks exactly like live telemetry.
+
+So the Linux half stays behind. It keeps the note's pulse beating, so readers
+still see something alive; it watches the block that moves; and when that goes
+quiet it blanks the pages, unlinks them, and starts the bridge again so the
+next session works like the first.
+
+```
+handoff_a is being written to, so the program is holding the section itself —
+handing over and leaving
+the game is holding the blocks — nothing of the bridge is running now
+nothing has written to handoff_a for 3s — the game has gone, so its blocks go too
+starting the bridge again, ready for the next session
+```
+
+Handing over is refused unless every page is owned, a heartbeat is named, and
+that block has actually been written to. A mirrored page is one this program is
+copying by hand, so letting go would freeze it; without a heartbeat there would
+be nothing left that could notice the game leaving; and bytes changing in a
+page this program created and never writes to is the only proof available that
+the game has a handle of its own.
 
 ## Telling a running bridge from its leftovers
 

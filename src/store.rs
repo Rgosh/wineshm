@@ -77,6 +77,25 @@ impl Store {
         Ok(file)
     }
 
+    /// Write zeroes over a page's file without creating it.
+    ///
+    /// **For a page this process does not hold.** After a handover the section
+    /// belongs to the writer and the file is watched from Linux — see
+    /// [`crate::handoff`] — so when the writer goes, the zeroing has to happen
+    /// from out here. A page that is not there needs no blanking and is not a
+    /// failure.
+    pub fn blank(&self, page: &Page) -> io::Result<()> {
+        let file = match std::fs::OpenOptions::new()
+            .write(true)
+            .open(self.path(page))
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        zero(&file, page.bytes)
+    }
+
     /// Take a page's file away.
     ///
     /// A page nobody owns is worse than no page: it holds the last bytes that
@@ -288,6 +307,42 @@ mod tests {
             .expect_err("a directory is not removable");
         assert_ne!(why.kind(), std::io::ErrorKind::NotFound);
         assert_eq!(store.remove_all(&[spec]).len(), 1);
+    }
+
+    /// The state after a handover: the file exists, something else wrote to
+    /// it, and this process has to leave nothing readable in it.
+    #[test]
+    fn blanking_a_page_this_process_does_not_hold_empties_it() {
+        let dir = scratch("blank-outside");
+        let store = Store::at(&dir);
+        let page = Page {
+            name: "held-elsewhere".into(),
+            bytes: 64,
+        };
+        {
+            let file = store.prepare(&page).expect("prepared");
+            drop(file);
+        }
+        std::fs::write(store.path(&page), vec![0xAB; 64]).expect("written by somebody else");
+
+        store.blank(&page).expect("blanked");
+        let after = std::fs::read(store.path(&page)).expect("read back");
+        assert!(after.iter().all(|byte| *byte == 0), "{after:?}");
+        assert_eq!(after.len(), 64, "the size is unchanged");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A page already gone is the ordinary end of a session, not a fault.
+    #[test]
+    fn blanking_a_page_that_is_not_there_is_not_an_error() {
+        let dir = scratch("blank-missing");
+        let store = Store::at(&dir);
+        let page = Page {
+            name: "never-existed".into(),
+            bytes: 16,
+        };
+        assert!(store.blank(&page).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// `zero` is the whole of the defence against a stale page, so it is
