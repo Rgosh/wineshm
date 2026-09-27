@@ -563,3 +563,169 @@ mod tests {
         assert_eq!(Launch::working_dir(Path::new("/")), None);
     }
 }
+
+/// Starting the *game* rather than a helper beside it.
+///
+/// **Two different jobs, and using one for the other is what breaks.** This
+/// crate's own binary wants the prefix and nothing else, so it is started with
+/// the `wine` inside Proton directly — which is cheap and skips everything
+/// Proton would otherwise set up.
+///
+/// A game wants all of it. Measured against Assetto Corsa:
+///
+/// | started with | what happens |
+/// |---|---|
+/// | `files/bin/wine acs.exe` | exits at once with 53 |
+/// | the same, plus `SteamAppId` | runs, and draws **no textures** |
+/// | `proton run acs.exe` | fsync, the Steam API, and the shader cache |
+///
+/// The middle row is the trap: it looks like it worked. Proton's own entry
+/// point is what installs DXVK and points d3d11 and dxgi at it, so going
+/// round it leaves the game rendering through wined3d — which starts, draws
+/// the world, and leaves the car untextured.
+pub mod game {
+    use super::{prefix_for, wine_for};
+    use std::path::{Path, PathBuf};
+
+    /// Proton's own directory, worked out from the `wine` inside it.
+    ///
+    /// `…/files/bin/wine` is three levels below the folder holding `proton`.
+    /// Taken this way round rather than searched for, so it is the same Proton
+    /// the prefix was built by — which is the one the game's own settings
+    /// name.
+    pub fn proton_root(wine: &Path) -> Option<PathBuf> {
+        let root = wine.parent()?.parent()?.parent()?;
+        root.join("proton").is_file().then(|| root.to_path_buf())
+    }
+
+    /// How to start a game in its own Steam prefix.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct Start {
+        /// Proton's entry point. It has a `#!/usr/bin/env python3` line and is
+        /// executable, so it is run directly.
+        pub proton: PathBuf,
+        /// `…/compatdata/<app id>`, which is the prefix's parent.
+        pub compat_data: PathBuf,
+        /// Where Steam itself lives.
+        pub steam: PathBuf,
+        /// Steam's number for the game, which both Proton and the game's own
+        /// copy of the Steam API are told.
+        pub app_id: u32,
+    }
+
+    impl Start {
+        /// What to run, and with what.
+        pub fn command(&self, exe: &Path) -> (PathBuf, Vec<String>) {
+            (
+                self.proton.join("proton"),
+                vec!["run".to_string(), exe.to_string_lossy().into_owned()],
+            )
+        }
+
+        /// **Every one of these is needed and none of them is optional.**
+        /// Without the compat paths Proton refuses to start; without the Steam
+        /// ids the game's own copy of the Steam API gives up and the process
+        /// exits before it draws anything.
+        pub fn env(&self) -> Vec<(String, String)> {
+            vec![
+                (
+                    "STEAM_COMPAT_DATA_PATH".to_string(),
+                    self.compat_data.to_string_lossy().into_owned(),
+                ),
+                (
+                    "STEAM_COMPAT_CLIENT_INSTALL_PATH".to_string(),
+                    self.steam.to_string_lossy().into_owned(),
+                ),
+                ("SteamAppId".to_string(), self.app_id.to_string()),
+                ("SteamGameId".to_string(), self.app_id.to_string()),
+            ]
+        }
+    }
+
+    /// Work out how to start this game, or `None` where Steam's own Proton
+    /// cannot be found — in which case the caller has nothing to fall back on
+    /// that would render correctly, and should say so rather than start
+    /// something that looks wrong.
+    pub fn how_to_start(app_id: u32) -> Option<Start> {
+        let prefix = prefix_for(app_id)?;
+        let compat_data = prefix.parent()?.to_path_buf();
+        let proton = proton_root(&wine_for(&prefix)?)?;
+        let steam = super::steam_roots().into_iter().next()?;
+        Some(Start {
+            proton,
+            compat_data,
+            steam,
+            app_id,
+        })
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// The folder holding `proton` is three above the `wine` inside it,
+        /// and it is only that folder if `proton` is actually there.
+        #[test]
+        fn protons_own_folder_is_found_from_the_wine_inside_it() {
+            let dir = std::env::temp_dir().join("wineshm-proton-root");
+            let bin = dir.join("files/bin");
+            let _ = std::fs::create_dir_all(&bin);
+            let wine = bin.join("wine");
+            let _ = std::fs::write(&wine, "");
+
+            assert_eq!(proton_root(&wine), None, "no proton script, no root");
+
+            let _ = std::fs::write(dir.join("proton"), "#!/usr/bin/env python3\n");
+            assert_eq!(proton_root(&wine).as_deref(), Some(dir.as_path()));
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        /// The two Steam ids are what the game's own API looks for, and the
+        /// two compat paths are what Proton refuses to start without.
+        #[test]
+        fn the_environment_carries_all_four() {
+            let start = Start {
+                proton: PathBuf::from("/proton"),
+                compat_data: PathBuf::from("/compatdata/244210"),
+                steam: PathBuf::from("/steam"),
+                app_id: 244_210,
+            };
+            let env = start.env();
+            for wanted in [
+                "STEAM_COMPAT_DATA_PATH",
+                "STEAM_COMPAT_CLIENT_INSTALL_PATH",
+                "SteamAppId",
+                "SteamGameId",
+            ] {
+                assert!(
+                    env.iter().any(|(key, _)| key == wanted),
+                    "{wanted} is missing"
+                );
+            }
+            assert!(
+                env.iter().any(|(_, value)| value == "244210"),
+                "the app id never reached the environment"
+            );
+        }
+
+        /// `proton run <exe>`, and the entry point rather than the wine inside
+        /// it — going round it is what leaves a game untextured.
+        #[test]
+        fn it_runs_protons_entry_point() {
+            let start = Start {
+                proton: PathBuf::from("/opt/proton"),
+                compat_data: PathBuf::from("/c"),
+                steam: PathBuf::from("/s"),
+                app_id: 1,
+            };
+            let (program, args) = start.command(Path::new("/games/ac/acs.exe"));
+            assert_eq!(program, PathBuf::from("/opt/proton/proton"));
+            assert_eq!(args[0], "run");
+            assert!(args[1].ends_with("acs.exe"));
+            assert!(
+                !program.to_string_lossy().contains("files/bin"),
+                "this is the bare wine, which renders through wined3d"
+            );
+        }
+    }
+}
