@@ -122,6 +122,35 @@ pub fn version_in_binary(bytes: &[u8]) -> Option<String> {
     core::str::from_utf8(&rest[..end]).ok().map(str::to_string)
 }
 
+/// Let go of the console window, where there is one to let go of.
+///
+/// **A bridge started by another program should not be a window.** Under Wine
+/// a console binary is given a console, and that console is a window with a
+/// title — on the machine this was written on, one called
+/// `Z:\…\wineshm.exe` sitting in the taskbar beside the game for the whole
+/// session. Nobody asked for it and nothing is written to it: the program run
+/// this way is told `--quiet`, and what it has to say it says in the note it
+/// leaves in `/dev/shm`.
+///
+/// **Behind a flag rather than always.** Somebody running this themselves from
+/// a terminal wants its output, and a program that silently detaches from the
+/// terminal it was typed into is a program that appears to have done nothing.
+///
+/// Does nothing where there is no console to free, which includes every case
+/// on Linux.
+pub fn step_out_of_sight() {
+    #[cfg(windows)]
+    {
+        // Safety: `FreeConsole` takes nothing, returns whether there was one,
+        // and is safe to call when there is not. Nothing here holds a handle
+        // to the console being freed — the streams are left to the runtime,
+        // which writes to a closed handle harmlessly.
+        unsafe {
+            let _ = windows::Win32::System::Console::FreeConsole();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

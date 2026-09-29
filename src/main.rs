@@ -24,6 +24,13 @@ fn main() -> ExitCode {
         }
     };
 
+    // **Before anything is printed.** Freeing the console after something has
+    // been written to it leaves that text on screen in a window that is then
+    // taken away, which is the worst of both.
+    if options.background {
+        wineshm::step_out_of_sight();
+    }
+
     // Reading the files a `--pages-from` named, which parsing the arguments
     // deliberately did not do: an argument parser that touches the disk cannot
     // be tested as a function of its arguments.

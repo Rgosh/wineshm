@@ -52,6 +52,8 @@ pub struct Options {
     pub slowest: Duration,
     /// Say nothing but errors.
     pub quiet: bool,
+    /// Let go of the console window, for a bridge started by another program.
+    pub background: bool,
     /// Report as JSON rather than as a table, for a program reading this.
     pub json: bool,
     /// The block that changes while the writer is alive. When it goes quiet,
@@ -81,6 +83,7 @@ impl Default for Options {
             quick: pacing::QUICK,
             slowest: pacing::SLOWEST,
             quiet: false,
+            background: false,
             json: false,
             heartbeat: None,
             blank_after: crate::watchdog::BLANK_AFTER,
@@ -139,6 +142,10 @@ OPTIONS:
     --verify             Report what is published here already, then stop
     --json               With --verify, report as JSON instead of a table
     --quiet              Say nothing but errors
+    --background         Let go of the console window, and say nothing.
+                         For a bridge another program started: under Wine a
+                         console binary is given a window, and nobody asked
+                         for one beside the game.
     -h, --help           This
     -V, --version        Print the version
 
@@ -198,6 +205,14 @@ where
                 options.action = Action::Launch { app_id };
             }
             "--quiet" => options.quiet = true,
+            "--background" => {
+                // Told together, because a bridge nobody can see is also a
+                // bridge nobody can read: hiding the console without
+                // silencing the program would leave it writing into a window
+                // that is gone.
+                options.background = true;
+                options.quiet = true;
+            }
             "--handoff" => options.handoff = true,
             "--json" => options.json = true,
             "--heartbeat" => options.heartbeat = Some(value("--heartbeat")?),
@@ -620,5 +635,36 @@ mod tests {
     fn a_directory_of_your_own_is_taken() {
         let options = parse_of(&["--page", "a:16", "--dir", "/tmp/here"]).expect("parses");
         assert_eq!(options.dir, PathBuf::from("/tmp/here"));
+    }
+}
+
+#[cfg(test)]
+mod background_tests {
+    use super::*;
+
+    /// **Hidden and silent are told together.** A console freed while the
+    /// program goes on printing is a program writing into a window that is no
+    /// longer there; and a bridge nobody can see is one nobody can read, so
+    /// there is nothing to print anyway.
+    #[test]
+    fn going_into_the_background_also_goes_quiet() {
+        let options = parse(
+            ["--page", "a:16", "--background"]
+                .iter()
+                .map(|s| s.to_string()),
+        )
+        .expect("that should parse");
+        assert!(options.background);
+        assert!(options.quiet, "hidden but still printing");
+    }
+
+    /// And it is off unless asked for: a program that detaches from the
+    /// terminal it was typed into appears to have done nothing.
+    #[test]
+    fn it_stays_in_sight_unless_asked() {
+        let options =
+            parse(["--page", "a:16"].iter().map(|s| s.to_string())).expect("that should parse");
+        assert!(!options.background);
+        assert!(!options.quiet);
     }
 }
