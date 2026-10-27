@@ -22,8 +22,14 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: The existing tag to build and upload
+        description: The tag to build and upload, like v0.7.0
         required: true
+      from:
+        description: >-
+          Where to build it from when the tag does not exist yet — a branch or
+          a commit. The tag is then made there, with the release.
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -33,9 +39,14 @@ jobs:
     name: Build from the tag and attach the binary
     runs-on: ubuntu-latest
     steps:
+      # **A release does not need a tag pushed from somebody's machine.** Some
+      # places a push can come from accept branches and refuse tags, and the
+      # release then could not be cut from there at all. Given `from`, the
+      # build is of that branch or commit, and the tag is made on exactly the
+      # commit that was built, by the release itself.
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ inputs.from || inputs.tag || github.ref }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -80,7 +91,8 @@ jobs:
         run: |
           tag="${{ inputs.tag || github.ref_name }}"
           gh release view "$tag" >/dev/null 2>&1 \
-            || gh release create "$tag" --title "wineshm ${tag#v}" --generate-notes
+            || gh release create "$tag" --target "$(git rev-parse HEAD)" \
+                 --title "wineshm ${tag#v}" --generate-notes
           gh release upload "$tag" \
             target/x86_64-pc-windows-gnu/release/wineshm.exe --clobber
 
