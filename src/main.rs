@@ -408,6 +408,12 @@ fn launch(options: &Options, app_id: u32) -> std::io::Result<ExitCode> {
     if options.handoff {
         args.push("--handoff".to_string());
     }
+    // The window has to be followed from inside the prefix, so the names
+    // travel with everything else.
+    if !options.window.is_empty() {
+        args.push("--window".to_string());
+        args.push(options.window.join(","));
+    }
     if options.quiet {
         args.push("--quiet".to_string());
     }
@@ -689,7 +695,18 @@ fn run(options: &Options) -> std::io::Result<bool> {
         }
     }
 
+    // **The window, on a thread of its own**, so a slow window manager never
+    // holds up a mirrored page. Stopped and its file removed on the way out,
+    // whatever the way out is.
+    let following =
+        (!options.window.is_empty()).then(|| follow_window(store.dir(), options.window.clone()));
+
     let ending = hold(&mut published, options, &note_path, &note);
+
+    if let Some((stop, thread)) = following {
+        stop.store(true, Ordering::Relaxed);
+        let _ = thread.join();
+    }
 
     if !options.quiet {
         report_what_it_cost(&published);
@@ -909,7 +926,13 @@ fn hold(
             // to is the proof that the writer has a handle of its own.** From
             // here the section outlives this program, so the only thing left
             // to do is stop being fifty megabytes of Wine.
-            if options.handoff && wineshm::handoff::may_hand_over(all_owned, true, stirred) {
+            // Not while following a window: that needs this process, and a
+            // program drawing over the game would lose it the moment the
+            // game started writing.
+            if options.handoff
+                && options.window.is_empty()
+                && wineshm::handoff::may_hand_over(all_owned, true, stirred)
+            {
                 if !options.quiet {
                     println!(
                         "{} is being written to, so the program is holding the section itself — \
@@ -968,6 +991,59 @@ fn hold(
         }
     }
     Ending::Asked
+}
+
+/// Follow the window and keep its record up to date, until told to stop.
+///
+/// Ten looks a second: a window being dragged is followed closely enough that
+/// whatever is drawn over it keeps up, and a look is a walk of the top-level
+/// windows, which is cheap. The record is rewritten when what it says changes,
+/// and once a second besides so its stamp says this is alive.
+#[cfg(windows)]
+fn follow_window(
+    dir: &std::path::Path,
+    names: Vec<String>,
+) -> (Arc<AtomicBool>, std::thread::JoinHandle<()>) {
+    use std::io::{Seek, Write};
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let told = Arc::clone(&stop);
+    let path = dir.join(wineshm::window::FILE);
+    let thread = std::thread::spawn(move || {
+        let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&path)
+        else {
+            return;
+        };
+        let mut sequence = 0u32;
+        let mut last: Option<wineshm::window::Seen> = None;
+        let mut written = Instant::now();
+        while !told.load(Ordering::Relaxed) {
+            let seen = wineshm::win::find_window(&names);
+            if last != Some(seen) || written.elapsed() >= Duration::from_secs(1) {
+                sequence = sequence.wrapping_add(1);
+                let record = seen.encode(sequence, wineshm::window::now_ms());
+                // One write of the whole record at the start of the file; the
+                // sequence at both ends is what tells a reader it caught it
+                // whole.
+                if file.seek(std::io::SeekFrom::Start(0)).is_ok() {
+                    let _ = file.write_all(&record);
+                    let _ = file.flush();
+                }
+                last = Some(seen);
+                written = Instant::now();
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        drop(file);
+        // A window record left behind would say a window is there that nobody
+        // is following, which is the stale-page mistake in a smaller file.
+        let _ = std::fs::remove_file(&path);
+    });
+    (stop, thread)
 }
 
 /// Watch standard input for a reason to stop.

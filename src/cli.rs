@@ -72,6 +72,9 @@ pub struct Options {
     /// Files describing pages to publish — see [`crate::recipe`]. Read by the
     /// caller, because parsing arguments reads nothing.
     pub recipes: Vec<PathBuf>,
+    /// Executable names whose window to follow and publish — see
+    /// [`crate::window`]. Empty is not following any.
+    pub window: Vec<String>,
 }
 
 impl Default for Options {
@@ -91,6 +94,7 @@ impl Default for Options {
             probes: Vec::new(),
             handoff: false,
             recipes: Vec::new(),
+            window: Vec::new(),
         }
     }
 }
@@ -128,6 +132,11 @@ OPTIONS:
                          exited stops reading as a live session. A preset sets
                          this itself; give it only to override
     --blank-after MS     How long it may be quiet first [default: 5000]
+    --window EXE[,EXE]   Follow the window of a program by that executable name
+                         and publish where it is, whether it is minimised and
+                         whether it is in front, as wineshm.window beside the
+                         pages — for something drawn over it from Linux. Keeps
+                         this running, so it is not combined with --handoff
     --handoff            Once the program is writing, let it hold the blocks and
                          exit, so nothing of this is left running during a
                          session. Needs --appid, which stays behind to watch
@@ -214,6 +223,16 @@ where
                 options.quiet = true;
             }
             "--handoff" => options.handoff = true,
+            "--window" => {
+                let text = value("--window")?;
+                let names = crate::window::names(&text);
+                if names.is_empty() {
+                    return Err(
+                        "--window wants the program's executable name, like acs.exe".to_string()
+                    );
+                }
+                options.window.extend(names);
+            }
             "--json" => options.json = true,
             "--heartbeat" => options.heartbeat = Some(value("--heartbeat")?),
             "--blank-after" => {
@@ -666,5 +685,25 @@ mod background_tests {
             parse(["--page", "a:16"].iter().map(|s| s.to_string())).expect("that should parse");
         assert!(!options.background);
         assert!(!options.quiet);
+    }
+
+    fn parse_args(args: &[&str]) -> Result<Options, String> {
+        parse(args.iter().map(|s| (*s).to_string()))
+    }
+
+    /// **Following a window names the program, and may name two.** An empty
+    /// list is a mistake said out loud, not a flag that quietly does nothing.
+    #[test]
+    fn a_window_is_followed_by_name() {
+        let options = parse_args(&[
+            "--page",
+            "a:16",
+            "--window",
+            "acc.exe,AC2-Win64-Shipping.exe",
+        ])
+        .expect("parses");
+        assert_eq!(options.window, vec!["acc.exe", "AC2-Win64-Shipping.exe"]);
+        assert!(parse_args(&["--page", "a:16", "--window", " , "]).is_err());
+        assert!(HELP.contains("--window"));
     }
 }

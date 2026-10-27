@@ -74,6 +74,7 @@ pub mod store;
 pub mod supervise;
 pub mod watch;
 pub mod watchdog;
+pub mod window;
 
 #[cfg(windows)]
 pub mod win;

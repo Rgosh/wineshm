@@ -393,6 +393,134 @@ pub fn stdin_is_a_console() -> bool {
     unsafe { GetConsoleMode(handle, &mut mode) }.is_ok()
 }
 
+/// Where the window of a program by one of these names is, if it has one.
+///
+/// Every top-level window is looked at; the ones belonging to a process whose
+/// image is one of `names` are measured, and [`crate::window::pick`] chooses
+/// among them. Owned windows — dialogs, tool windows — are not candidates:
+/// a game's window is top level.
+pub fn find_window(names: &[String]) -> crate::window::Seen {
+    use windows::Win32::Foundation::{BOOL, HWND, LPARAM, POINT, RECT};
+    use windows::Win32::Graphics::Gdi::ClientToScreen;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GW_OWNER, GetClientRect, GetForegroundWindow, GetSystemMetrics, GetWindow,
+        GetWindowThreadProcessId, IsIconic, IsWindowVisible, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+    };
+
+    struct Search<'a> {
+        names: &'a [String],
+        found: Vec<crate::window::Seen>,
+        foreground: HWND,
+        screen: (i32, i32),
+        /// Image names already looked up, by process id: one lookup per
+        /// process rather than per window.
+        known: Vec<(u32, bool)>,
+    }
+
+    unsafe extern "system" fn each(window: HWND, data: LPARAM) -> BOOL {
+        // SAFETY: `data` is the `Search` handed to `EnumWindows` below, which
+        // outlives the enumeration and is not touched anywhere else during it.
+        let search = unsafe { &mut *(data.0 as *mut Search<'_>) };
+        // SAFETY: plain queries about a window handle the system just handed
+        // over; none of them keep it.
+        unsafe {
+            if !IsWindowVisible(window).as_bool() {
+                return BOOL(1);
+            }
+            if GetWindow(window, GW_OWNER).is_ok_and(|owner| !owner.is_invalid()) {
+                return BOOL(1);
+            }
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(window, Some(&mut pid));
+            let ours = match search.known.iter().find(|(id, _)| *id == pid) {
+                Some((_, ours)) => *ours,
+                None => {
+                    let ours = image_of(pid)
+                        .is_some_and(|image| crate::window::is_named(&image, search.names));
+                    search.known.push((pid, ours));
+                    ours
+                }
+            };
+            if !ours {
+                return BOOL(1);
+            }
+            let minimised = IsIconic(window).as_bool();
+            let mut rect = RECT::default();
+            let mut corner = POINT::default();
+            let measured = GetClientRect(window, &mut rect).is_ok()
+                && ClientToScreen(window, &mut corner).as_bool();
+            search.found.push(crate::window::Seen {
+                found: true,
+                minimised,
+                foreground: window == search.foreground,
+                x: if measured { corner.x } else { 0 },
+                y: if measured { corner.y } else { 0 },
+                width: if measured && !minimised {
+                    rect.right - rect.left
+                } else {
+                    0
+                },
+                height: if measured && !minimised {
+                    rect.bottom - rect.top
+                } else {
+                    0
+                },
+                screen_x: search.screen.0,
+                screen_y: search.screen.1,
+            });
+        }
+        BOOL(1)
+    }
+
+    // SAFETY: two queries with no arguments that matter.
+    let (foreground, screen) = unsafe {
+        (
+            GetForegroundWindow(),
+            (
+                GetSystemMetrics(SM_XVIRTUALSCREEN),
+                GetSystemMetrics(SM_YVIRTUALSCREEN),
+            ),
+        )
+    };
+    let mut search = Search {
+        names,
+        found: Vec::new(),
+        foreground,
+        screen,
+        known: Vec::new(),
+    };
+    // SAFETY: the callback only reads through the pointer while `search` is
+    // alive, which it is for the whole of this call.
+    let _ = unsafe { EnumWindows(Some(each), LPARAM(&mut search as *mut Search<'_> as isize)) };
+    crate::window::pick(&search.found)
+}
+
+/// The full image path of a process, if it can be asked.
+fn image_of(pid: u32) -> Option<String> {
+    use windows::Win32::System::Threading::{
+        OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+        QueryFullProcessImageNameW,
+    };
+    use windows::core::PWSTR;
+
+    // SAFETY: the handle is closed on every path out, and the buffer is ours
+    // and as long as the length we pass says.
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut buffer = [0u16; 1024];
+        let mut length = buffer.len() as u32;
+        let named = QueryFullProcessImageNameW(
+            process,
+            PROCESS_NAME_WIN32,
+            PWSTR(buffer.as_mut_ptr()),
+            &mut length,
+        );
+        let _ = CloseHandle(process);
+        named.ok()?;
+        Some(String::from_utf16_lossy(&buffer[..length as usize]))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

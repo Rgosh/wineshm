@@ -469,6 +469,40 @@ be nothing left that could notice the game leaving; and bytes changing in a
 page this program created and never writes to is the only proof available that
 the game has a handle of its own.
 
+## Drawing over the game from Linux
+
+A Linux program that draws over a game — a lap timer, a delta, a warning — has
+to know where the game's window is and whether anybody can see it. Under Wine
+that is a question only a process inside the prefix can ask, and this one
+already is:
+
+```sh
+wineshm --appid 244210 --preset assetto-corsa --window acs.exe
+```
+
+Ten times a second the window of the program named is looked for, and
+`wineshm.window` beside the pages says what was found — 64 bytes, little-endian:
+
+| offset | type | what |
+|---:|---|---|
+| 0 | u32 | `WSWN` |
+| 4 | u32 | format, `1` |
+| 8 | u32 | sequence, raised on every write |
+| 12 | u32 | flags: 1 found, 2 minimised, 4 in front |
+| 16 | i32 × 4 | client area x, y, width, height, Win32 screen pixels |
+| 32 | i32 × 2 | the virtual screen's top-left corner |
+| 40 | u64 | written at, ms since the Unix epoch |
+| 60 | u32 | the sequence again |
+
+The sequence is at both ends so a reader that catches a write half-way can
+tell, and read again. Subtract the virtual screen's corner from the client
+area's to get a position on the X root window — Win32 puts the primary monitor
+at the origin and X does not. The record is rewritten once a second even when
+nothing moved, so a stamp more than a few seconds old means nobody is following
+any more. `--window` keeps the bridge running, so it is not combined with
+`--handoff`; several names can be given, comma-separated, for a game that is
+started as one program and draws as another.
+
 ## Telling a running bridge from its leftovers
 
 A bridge that exits cleanly takes its pages and its note away. One that is
