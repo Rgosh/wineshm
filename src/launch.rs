@@ -611,15 +611,32 @@ pub mod game {
         /// Steam's number for the game, which both Proton and the game's own
         /// copy of the Steam API are told.
         pub app_id: u32,
+        /// The Steam Linux Runtime to start it inside, as Steam does — see
+        /// [`runtime_for`]. `None` runs Proton straight on the host.
+        pub runtime: Option<PathBuf>,
     }
 
     impl Start {
         /// What to run, and with what.
         pub fn command(&self, exe: &Path) -> (PathBuf, Vec<String>) {
-            (
-                self.proton.join("proton"),
-                vec!["run".to_string(), exe.to_string_lossy().into_owned()],
-            )
+            let proton = self.proton.join("proton").to_string_lossy().into_owned();
+            let exe = exe.to_string_lossy().into_owned();
+            match &self.runtime {
+                // **What Steam runs**: the container's entry point, which
+                // starts Proton inside it with the runtime's own libraries
+                // rather than whatever this distribution ships.
+                Some(runtime) => (
+                    runtime.join("_v2-entry-point"),
+                    vec![
+                        "--verb=waitforexitandrun".to_string(),
+                        "--".to_string(),
+                        proton,
+                        "waitforexitandrun".to_string(),
+                        exe,
+                    ],
+                ),
+                None => (PathBuf::from(proton), vec!["run".to_string(), exe]),
+            }
         }
 
         /// **Every one of these is needed and none of them is optional.**
@@ -627,7 +644,7 @@ pub mod game {
         /// ids the game's own copy of the Steam API gives up and the process
         /// exits before it draws anything.
         pub fn env(&self) -> Vec<(String, String)> {
-            vec![
+            let mut env = vec![
                 (
                     "STEAM_COMPAT_DATA_PATH".to_string(),
                     self.compat_data.to_string_lossy().into_owned(),
@@ -638,8 +655,57 @@ pub mod game {
                 ),
                 ("SteamAppId".to_string(), self.app_id.to_string()),
                 ("SteamGameId".to_string(), self.app_id.to_string()),
-            ]
+            ];
+            // **The container sees only what it is told about.** Steam names
+            // the tools it runs, so Proton's own folder is mounted inside —
+            // a GE-Proton under `compatibilitytools.d` is otherwise not.
+            if let Some(runtime) = &self.runtime {
+                let tools = std::env::join_paths([&self.proton, runtime])
+                    .map(|paths| paths.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                env.push(("STEAM_COMPAT_TOOL_PATHS".to_string(), tools));
+            }
+            env
         }
+
+        /// The same start inside the Steam Linux Runtime, when the chosen
+        /// Proton asks for one and it is installed. Unchanged otherwise.
+        pub fn in_runtime(mut self, libraries: &[PathBuf]) -> Self {
+            self.runtime = runtime_for(&self.proton, libraries);
+            self
+        }
+    }
+
+    /// One quoted value out of a Valve key-value file (`toolmanifest.vdf`,
+    /// `appmanifest_*.acf`): the first `"key" "value"` line naming `key`.
+    pub fn vdf_value(text: &str, key: &str) -> Option<String> {
+        let wanted = format!("\"{key}\"");
+        text.lines().find_map(|line| {
+            let rest = line.trim().strip_prefix(wanted.as_str())?;
+            let opened = rest.find('"')? + 1;
+            let closed = rest.get(opened..)?.find('"')? + opened;
+            rest.get(opened..closed).map(str::to_string)
+        })
+    }
+
+    /// **The container a Proton asks to run in**, found the way Steam finds
+    /// it: the Proton's `toolmanifest.vdf` names a tool by app id
+    /// (`require_tool_appid`, 1628350 for Sniper), that tool's
+    /// `appmanifest_<id>.acf` names its folder, and the folder holds the
+    /// `_v2-entry-point` Steam starts everything through.
+    ///
+    /// `None` where the Proton asks for none (Proton 5.0 and older) or the
+    /// runtime is not installed — and then the game is started as before,
+    /// with the host's own libraries.
+    pub fn runtime_for(proton: &Path, libraries: &[PathBuf]) -> Option<PathBuf> {
+        let manifest = std::fs::read_to_string(proton.join("toolmanifest.vdf")).ok()?;
+        let tool = vdf_value(&manifest, "require_tool_appid")?;
+        libraries.iter().find_map(|library| {
+            let apps = library.join("steamapps");
+            let acf = std::fs::read_to_string(apps.join(format!("appmanifest_{tool}.acf"))).ok()?;
+            let folder = apps.join("common").join(vdf_value(&acf, "installdir")?);
+            folder.join("_v2-entry-point").is_file().then_some(folder)
+        })
     }
 
     impl Start {
@@ -704,6 +770,7 @@ pub mod game {
             compat_data,
             steam,
             app_id,
+            runtime: None,
         })
     }
 
@@ -740,12 +807,73 @@ pub mod game {
                 compat_data: PathBuf::from("/c"),
                 steam: PathBuf::from("/s"),
                 app_id: 1,
+                runtime: None,
             }
             .through(PathBuf::from("/ge"));
             assert_eq!(
                 start.command(Path::new("/g.exe")).0,
                 PathBuf::from("/ge/proton")
             );
+            let _ = std::fs::remove_dir_all(&root);
+        }
+
+        /// **The runtime is found as Steam finds it** — the Proton names it by
+        /// app id, its manifest names the folder — and the start goes through
+        /// its entry point with Proton's folder handed in. A Proton naming
+        /// no runtime, or one not installed, starts as before.
+        #[test]
+        fn the_runtime_a_proton_asks_for_is_what_it_starts_inside() {
+            let root = std::env::temp_dir().join(format!("wineshm-runtime-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&root);
+            let proton = root.join("steamapps/common/Proton 9.0");
+            let runtime = root.join("steamapps/common/SteamLinuxRuntime_sniper");
+            let _ = std::fs::create_dir_all(&proton);
+            let _ = std::fs::create_dir_all(&runtime);
+            let _ = std::fs::write(proton.join("proton"), "");
+            let libraries = vec![root.clone()];
+            assert_eq!(runtime_for(&proton, &libraries), None, "no manifest");
+            let _ = std::fs::write(
+                proton.join("toolmanifest.vdf"),
+                "\"manifest\"\n{\n  \"version\" \"2\"\n  \"commandline\" \"/proton %verb%\"\n  \
+                 \"require_tool_appid\" \"1628350\"\n}\n",
+            );
+            assert_eq!(runtime_for(&proton, &libraries), None, "not installed");
+            let _ = std::fs::write(
+                root.join("steamapps/appmanifest_1628350.acf"),
+                "\"AppState\"\n{\n\t\"appid\"\t\t\"1628350\"\n\t\"installdir\"\t\t\"SteamLinuxRuntime_sniper\"\n}\n",
+            );
+            assert_eq!(runtime_for(&proton, &libraries), None, "no entry point");
+            let _ = std::fs::write(runtime.join("_v2-entry-point"), "");
+            assert_eq!(runtime_for(&proton, &libraries), Some(runtime.clone()));
+
+            let start = Start {
+                proton: proton.clone(),
+                compat_data: PathBuf::from("/c"),
+                steam: PathBuf::from("/s"),
+                app_id: 244210,
+                runtime: None,
+            };
+            let plain = start.clone().command(Path::new("/g/acs.exe"));
+            assert_eq!(plain.1, vec!["run", "/g/acs.exe"]);
+            let inside = start.in_runtime(&libraries);
+            let (program, args) = inside.command(Path::new("/g/acs.exe"));
+            assert_eq!(program, runtime.join("_v2-entry-point"));
+            assert_eq!(
+                args.first().map(String::as_str),
+                Some("--verb=waitforexitandrun")
+            );
+            assert_eq!(
+                args.get(2),
+                Some(&proton.join("proton").to_string_lossy().into_owned())
+            );
+            assert_eq!(args.last().map(String::as_str), Some("/g/acs.exe"));
+            let tools = inside
+                .env()
+                .into_iter()
+                .find(|(k, _)| k == "STEAM_COMPAT_TOOL_PATHS")
+                .map(|(_, v)| v)
+                .unwrap_or_default();
+            assert!(tools.contains("Proton 9.0") && tools.contains("SteamLinuxRuntime_sniper"));
             let _ = std::fs::remove_dir_all(&root);
         }
 
@@ -775,6 +903,7 @@ pub mod game {
                 compat_data: PathBuf::from("/compatdata/244210"),
                 steam: PathBuf::from("/steam"),
                 app_id: 244_210,
+                runtime: None,
             };
             let env = start.env();
             for wanted in [
@@ -803,6 +932,7 @@ pub mod game {
                 compat_data: PathBuf::from("/c"),
                 steam: PathBuf::from("/s"),
                 app_id: 1,
+                runtime: None,
             };
             let (program, args) = start.command(Path::new("/games/ac/acs.exe"));
             assert_eq!(program, PathBuf::from("/opt/proton/proton"));
