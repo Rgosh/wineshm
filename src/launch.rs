@@ -642,6 +642,54 @@ pub mod game {
         }
     }
 
+    impl Start {
+        /// The same start through another Proton — one the player chose,
+        /// GE-Proton or an older build that kept force feedback working.
+        /// The prefix stays the game's own: Proton updates it on the first
+        /// start, as Steam's own switch does.
+        pub fn through(mut self, proton: PathBuf) -> Self {
+            self.proton = proton;
+            self
+        }
+    }
+
+    /// Every Proton installed for these Steam roots: Valve's own under each
+    /// library's `steamapps/common` (`Proton 9.0`, `Proton - Experimental`)
+    /// and the ones people add under `compatibilitytools.d` (`GE-Proton10-34`)
+    /// — each a folder holding a `proton` script. By name, sorted, each once.
+    pub fn protons_under(roots: &[PathBuf]) -> Vec<(String, PathBuf)> {
+        let mut places: Vec<PathBuf> = super::libraries(roots)
+            .into_iter()
+            .map(|library| library.join("steamapps").join("common"))
+            .collect();
+        places.extend(roots.iter().map(|root| root.join("compatibilitytools.d")));
+        let mut found: Vec<(String, PathBuf)> = Vec::new();
+        for place in places {
+            let Ok(entries) = std::fs::read_dir(&place) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let folder = entry.path();
+                let Some(name) = folder.file_name().and_then(|n| n.to_str()) else {
+                    continue;
+                };
+                let is_proton = folder.join("proton").is_file()
+                    && (name.to_ascii_lowercase().contains("proton")
+                        || place.ends_with("compatibilitytools.d"));
+                if is_proton && !found.iter().any(|(n, _)| n == name) {
+                    found.push((name.to_string(), folder));
+                }
+            }
+        }
+        found.sort_by_key(|(name, _)| name.to_ascii_lowercase());
+        found
+    }
+
+    /// The same, for this machine's Steam.
+    pub fn protons() -> Vec<(String, PathBuf)> {
+        protons_under(&super::steam_roots())
+    }
+
     /// Work out how to start this game, or `None` where Steam's own Proton
     /// cannot be found — in which case the caller has nothing to fall back on
     /// that would render correctly, and should say so rather than start
@@ -662,6 +710,44 @@ pub mod game {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        /// Valve's Protons and the added ones are both found, each once, and a
+        /// folder without a `proton` script is not one.
+        #[test]
+        fn installed_protons_are_found_in_both_places() {
+            let root = std::env::temp_dir().join(format!("wineshm-protons-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&root);
+            for folder in [
+                "steamapps/common/Proton 9.0",
+                "steamapps/common/Proton - Experimental",
+                "compatibilitytools.d/GE-Proton10-34",
+            ] {
+                let _ = std::fs::create_dir_all(root.join(folder));
+                let _ = std::fs::write(root.join(folder).join("proton"), "");
+            }
+            let _ = std::fs::create_dir_all(root.join("steamapps/common/assettocorsa"));
+            let _ = std::fs::create_dir_all(root.join("compatibilitytools.d/empty"));
+            let names: Vec<String> = protons_under(std::slice::from_ref(&root))
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect();
+            assert_eq!(
+                names,
+                vec!["GE-Proton10-34", "Proton - Experimental", "Proton 9.0"]
+            );
+            let start = Start {
+                proton: PathBuf::from("/a"),
+                compat_data: PathBuf::from("/c"),
+                steam: PathBuf::from("/s"),
+                app_id: 1,
+            }
+            .through(PathBuf::from("/ge"));
+            assert_eq!(
+                start.command(Path::new("/g.exe")).0,
+                PathBuf::from("/ge/proton")
+            );
+            let _ = std::fs::remove_dir_all(&root);
+        }
 
         /// The folder holding `proton` is three above the `wine` inside it,
         /// and it is only that folder if `proton` is actually there.
